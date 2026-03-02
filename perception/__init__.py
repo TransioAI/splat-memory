@@ -1,6 +1,17 @@
-from .detector import ObjectDetector
-from .segmentor import Segmentor
-from .depth import DepthEstimator
-from .pipeline import PerceptionPipeline
+"""Perception module — image to detections, masks, and metric depth."""
 
-__all__ = ["ObjectDetector", "Segmentor", "DepthEstimator", "PerceptionPipeline"]
+from __future__ import annotations
+
+from perception.depth import DepthEstimator
+from perception.detector import Detection, ObjectDetector
+from perception.pipeline import PerceptionPipeline, PerceptionResult
+from perception.segmentor import Segmentor
+
+__all__ = [
+    "DepthEstimator",
+    "Detection",
+    "ObjectDetector",
+    "PerceptionPipeline",
+    "PerceptionResult",
+    "Segmentor",
+]
