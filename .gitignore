@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+
+# Model caches
+models/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+
+# HuggingFace cache
+hf_cache/
+
+# Output files
+output/
+results/
+*.png
+*.jpg
+*.jpeg
+!test_images/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Claude Code
+.claude/
