@@ -1,0 +1,29 @@
+[project]
+name = "splat-memory"
+version = "0.1.0"
+description = "Single-image spatial reasoning: 3D scene understanding from a single photo"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "pydantic>=2.10.0",
+    "transformers>=4.48.0",
+    "torch>=2.5.0",
+    "torchvision>=0.20.0",
+    "numpy>=1.26.0",
+    "opencv-python>=4.10.0",
+    "Pillow>=10.4.0",
+    "plotly>=5.24.0",
+    "anthropic>=0.42.0",
+    "python-multipart>=0.0.18",
+]
+
+[project.scripts]
+splat-memory = "main:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
