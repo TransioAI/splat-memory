@@ -6,6 +6,7 @@ import logging
 import math
 
 import numpy as np
+import PIL.Image
 
 from .backproject import CameraIntrinsics, Object3D
 
@@ -19,6 +20,69 @@ KNOWN_SIZES: dict[str, float] = {
     "countertop": 0.91,
     "counter": 0.91,
 }
+
+# Full-frame (35mm) sensor width in mm — used for FOV conversion.
+_FULL_FRAME_WIDTH_MM = 36.0
+
+
+def focal_length_35mm_to_fov(focal_length_35mm: float) -> float:
+    """Convert 35mm-equivalent focal length to horizontal FOV in degrees.
+
+    Formula: ``fov = 2 * atan(36 / (2 * fl35))``
+
+    Args:
+        focal_length_35mm: Focal length in 35mm-equivalent millimetres.
+
+    Returns:
+        Horizontal field of view in degrees.
+    """
+    if focal_length_35mm <= 0:
+        raise ValueError(f"focal_length_35mm must be positive, got {focal_length_35mm}")
+    fov_rad = 2.0 * math.atan(_FULL_FRAME_WIDTH_MM / (2.0 * focal_length_35mm))
+    return math.degrees(fov_rad)
+
+
+def extract_fov_from_exif(image: PIL.Image.Image) -> float | None:
+    """Try to extract horizontal FOV from image EXIF metadata.
+
+    Reads ``FocalLengthIn35mmFilm`` (EXIF tag 41989) and converts to FOV.
+    Must be called **before** ``.convert("RGB")`` which strips EXIF data.
+
+    Args:
+        image: A PIL Image (freshly opened, EXIF still intact).
+
+    Returns:
+        Horizontal FOV in degrees, or ``None`` if EXIF is unavailable.
+    """
+    try:
+        exif = image.getexif()
+        if not exif:
+            return None
+
+        # FocalLengthIn35mmFilm lives in the Exif IFD (sub-IFD)
+        from PIL.ExifTags import IFD
+
+        exif_ifd = exif.get_ifd(IFD.Exif)
+
+        # Tag 41989 = FocalLengthIn35mmFilm
+        fl35 = exif_ifd.get(41989)
+        if fl35 is None or fl35 <= 0:
+            # Fallback: check top-level (some formats store it there)
+            fl35 = exif.get(41989)
+            if fl35 is None or fl35 <= 0:
+                logger.debug("No usable FocalLengthIn35mmFilm in EXIF.")
+                return None
+
+        fov = focal_length_35mm_to_fov(float(fl35))
+        logger.info(
+            "Extracted FOV from EXIF: FocalLengthIn35mmFilm=%dmm → FOV=%.1f°",
+            fl35,
+            fov,
+        )
+        return fov
+    except Exception:
+        logger.debug("Could not extract FOV from EXIF.", exc_info=True)
+        return None
 
 
 def estimate_intrinsics(

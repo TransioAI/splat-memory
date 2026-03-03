@@ -31,6 +31,12 @@ class PerceptionResult:
     depth_map: np.ndarray
     image_size: tuple[int, int]  # (width, height)
 
+    # Optional debug data (populated when tagger pipeline runs)
+    raw_tags: list[str] | None = None
+    filtered_tags: list[str] | None = None
+    anchors_injected: list[str] | None = None
+    pre_nms_detections: list[Detection] | None = None
+
     @property
     def num_objects(self) -> int:
         return len(self.detections)
@@ -143,6 +149,12 @@ class PerceptionPipeline:
         # --- 1. Detection --------------------------------------------------
         logger.info("Running object detection …")
 
+        # Debug data (populated when tagger pipeline runs)
+        _raw_tags = None
+        _filtered_tags = None
+        _anchors_injected = None
+        _pre_nms_detections = None
+
         if text_prompts is not None:
             # User provided explicit prompts — use original all-at-once DINO
             logger.info("Using explicit prompts: %s", text_prompts)
@@ -150,26 +162,28 @@ class PerceptionPipeline:
         elif self.use_tagger:
             # RAM++ → Claude filter → per-tag DINO pipeline
             logger.info("Running RAM++ tagging …")
-            raw_tags = self.tagger.tag(image)
+            _raw_tags = self.tagger.tag(image)
 
             logger.info("Running Claude tag filter …")
-            filtered_tags = self.tag_filter.filter_tags(raw_tags)
+            _filtered_tags = self.tag_filter.filter_tags(_raw_tags)
 
             # Guarantee spatial anchors are always sent to DINO
-            anchors_added = []
+            _anchors_injected = []
             for anchor in sorted(SPATIAL_ANCHORS):
-                if anchor not in filtered_tags:
-                    filtered_tags.append(anchor)
-                    anchors_added.append(anchor)
-            if anchors_added:
-                logger.info("Injected spatial anchors: %s", anchors_added)
+                if anchor not in _filtered_tags:
+                    _filtered_tags.append(anchor)
+                    _anchors_injected.append(anchor)
+            if _anchors_injected:
+                logger.info("Injected spatial anchors: %s", _anchors_injected)
 
-            if not filtered_tags:
+            if not _filtered_tags:
                 logger.warning("Tag filter returned empty list — falling back to defaults.")
                 detections = self.detector.detect(image, text_prompts=None)
             else:
-                logger.info("Running per-tag detection for %d tags …", len(filtered_tags))
-                detections = self.detector.detect_per_tag(image, filtered_tags)
+                logger.info("Running per-tag detection for %d tags …", len(_filtered_tags))
+                detections, _pre_nms_detections = self.detector.detect_per_tag(
+                    image, _filtered_tags, return_pre_nms=True,
+                )
         else:
             detections = self.detector.detect(image, text_prompts=None)
 
@@ -197,6 +211,10 @@ class PerceptionPipeline:
             masks=masks,
             depth_map=depth_map,
             image_size=image_size,
+            raw_tags=_raw_tags,
+            filtered_tags=_filtered_tags,
+            anchors_injected=_anchors_injected,
+            pre_nms_detections=_pre_nms_detections,
         )
         logger.info(
             "Perception complete: %d objects, depth shape %s, image %s",

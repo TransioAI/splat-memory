@@ -44,7 +44,7 @@ def draw_detections(
 ) -> None:
     """Draw bounding boxes and labels on image and save."""
     canvas = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    h, w = canvas.shape[:2]
+    _h, w = canvas.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = max(0.4, w / 2000)
     thickness = max(1, w // 600)
@@ -143,7 +143,29 @@ def main() -> None:
         sys.exit(1)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
-    image = Image.open(image_path).convert("RGB")
+
+    # Register HEIC opener for iPhone images
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except ImportError:
+        pass
+
+    raw_image = Image.open(image_path)
+
+    # Extract FOV from EXIF before converting to RGB (which strips metadata)
+    from fusion.calibration import extract_fov_from_exif
+    exif_fov = extract_fov_from_exif(raw_image)
+    if exif_fov is not None:
+        fov_degrees = exif_fov
+        intrinsics_source = "exif"
+        print(f"  FOV from EXIF: {fov_degrees:.1f}°")
+    else:
+        fov_degrees = 70.0
+        intrinsics_source = "default"
+        print(f"  No EXIF FOV found, using default: {fov_degrees:.1f}°")
+
+    image = raw_image.convert("RGB")
     width, height = image.size
     print(f"Image: {image_path} ({width}x{height})")
 
@@ -288,7 +310,7 @@ def main() -> None:
     print(f"  Depth shape: {depth_map.shape}")
     valid_depth = depth_map[depth_map > 0]
     if len(valid_depth) > 0:
-        print(f"  Range: {valid_depth.min():.2f}m – {valid_depth.max():.2f}m")
+        print(f"  Range: {valid_depth.min():.2f}m - {valid_depth.max():.2f}m")
         print(f"  Median: {np.median(valid_depth):.2f}m")
 
     save_depth_visualization(
@@ -309,8 +331,11 @@ def main() -> None:
     from fusion.calibration import apply_scale, auto_calibrate_scale, estimate_intrinsics
     from fusion.spatial_relations import compute_spatial_relations
 
-    intrinsics = estimate_intrinsics(width, height)
-    print(f"  Intrinsics: fx={intrinsics.fx:.1f}, fy={intrinsics.fy:.1f}")
+    intrinsics = estimate_intrinsics(width, height, fov_degrees=fov_degrees)
+    print(
+        f"  Intrinsics: fx={intrinsics.fx:.1f}, fy={intrinsics.fy:.1f}"
+        f" (fov={fov_degrees:.1f}°, {intrinsics_source})"
+    )
 
     objects_3d = []
     for det, mask in zip(nms_detections, masks, strict=False):
@@ -378,7 +403,9 @@ def main() -> None:
         ))
 
     calibration = CalibrationInfo(
-        fov_degrees=70.0, scale_factor=round(scale_factor, 4),
+        fov_degrees=round(fov_degrees, 2),
+        intrinsics_source=intrinsics_source,
+        scale_factor=round(scale_factor, 4),
         reference_object=reference_object,
         image_width=width, image_height=height,
     )
@@ -414,17 +441,17 @@ def main() -> None:
     if reference_object:
         print(f"  Reference: {reference_object}")
     print(f"\n  All outputs in: {OUTPUT_DIR.resolve()}/")
-    print(f"    01_ram_raw_tags.json         — RAM++ raw tags")
-    print(f"    02_filtered_tags.json         — Claude-filtered tags")
-    print(f"    03_per_tag_detections.json    — per-tag DINO results")
-    print(f"    03_detections_pre_nms.jpg     — all detections before NMS")
-    print(f"    04_detections_post_nms.jpg    — final detections after NMS")
-    print(f"    04_nms_detections.json        — NMS detections data")
-    print(f"    05_segmentation_masks.jpg     — SAM2 mask overlay")
-    print(f"    06_depth_map.jpg              — colorized depth heatmap")
-    print(f"    06_depth_map.npy              — raw depth array")
-    print(f"    08_scene_graph.txt            — human-readable scene graph")
-    print(f"    08_scene_graph.json           — full scene graph JSON")
+    print("    01_ram_raw_tags.json         — RAM++ raw tags")
+    print("    02_filtered_tags.json         — Claude-filtered tags")
+    print("    03_per_tag_detections.json    — per-tag DINO results")
+    print("    03_detections_pre_nms.jpg     — all detections before NMS")
+    print("    04_detections_post_nms.jpg    — final detections after NMS")
+    print("    04_nms_detections.json        — NMS detections data")
+    print("    05_segmentation_masks.jpg     — SAM2 mask overlay")
+    print("    06_depth_map.jpg              — colorized depth heatmap")
+    print("    06_depth_map.npy              — raw depth array")
+    print("    08_scene_graph.txt            — human-readable scene graph")
+    print("    08_scene_graph.json           — full scene graph JSON")
 
 
 if __name__ == "__main__":

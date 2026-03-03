@@ -38,6 +38,7 @@ class CalibrationInfo(BaseModel):
     """Calibration metadata."""
 
     fov_degrees: float = 70.0
+    intrinsics_source: str = "default"  # "user_provided", "exif", or "default"
     scale_factor: float = 1.0
     reference_object: str | None = None
     image_width: int = 0
@@ -62,7 +63,7 @@ class SceneGraph(BaseModel):
         # Calibration info
         cal = self.calibration
         lines.append(f"Image: {cal.image_width}x{cal.image_height} px")
-        lines.append(f"FOV: {cal.fov_degrees:.1f} degrees")
+        lines.append(f"FOV: {cal.fov_degrees:.1f} degrees (source: {cal.intrinsics_source})")
         lines.append(f"Scale factor: {cal.scale_factor:.3f}")
         if cal.reference_object:
             lines.append(f"Reference object: {cal.reference_object}")

@@ -19,6 +19,7 @@ dependencies = [
     "accelerate>=1.2.0",
     "scipy>=1.14.0",
     "huggingface-hub>=0.20.0",
+    "pillow-heif>=0.18.0",
 ]
 
 [project.optional-dependencies]

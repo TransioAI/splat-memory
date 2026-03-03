@@ -199,7 +199,8 @@ class ObjectDetector:
         image: PIL.Image.Image,
         tags: list[str],
         iou_threshold: float = 0.5,
-    ) -> list[Detection]:
+        return_pre_nms: bool = False,
+    ) -> list[Detection] | tuple[list[Detection], list[Detection]]:
         """Detect objects by running DINO once per tag, then merging with NMS.
 
         This produces more accurate detections than sending all tags at once,
@@ -213,11 +214,13 @@ class ObjectDetector:
             List of individual object labels (e.g. ``["couch", "table", "lamp"]``).
         iou_threshold:
             IoU threshold for cross-category NMS.
+        return_pre_nms:
+            When True, return ``(post_nms, pre_nms)`` instead of just post-NMS.
 
         Returns
         -------
-        list[Detection]
-            Merged, NMS-filtered detections from all per-tag runs.
+        list[Detection] | tuple[list[Detection], list[Detection]]
+            NMS-filtered detections, or ``(post_nms, pre_nms)`` if *return_pre_nms*.
         """
         self._ensure_model()
         image = image.convert("RGB")
@@ -235,7 +238,10 @@ class ObjectDetector:
             else:
                 self.confidence_threshold = default_threshold
 
-            logger.debug("Running detection for tag: '%s' (threshold=%.2f)", tag_clean, self.confidence_threshold)
+            logger.debug(
+                "Running detection for tag: '%s' (threshold=%.2f)",
+                tag_clean, self.confidence_threshold,
+            )
 
             if self._backend == "grounding_dino":
                 dets = self._detect_grounding_dino(image, text_prompt)
@@ -263,6 +269,9 @@ class ObjectDetector:
             len(filtered),
             self._backend,
         )
+
+        if return_pre_nms:
+            return filtered, all_detections
         return filtered
 
     def detect(
