@@ -25,5 +25,8 @@ plotly>=5.24.0
 # Reasoning
 anthropic>=0.42.0
 
+# Gemini tagger
+google-genai>=1.0.0
+
 # CLI
 python-multipart>=0.0.18

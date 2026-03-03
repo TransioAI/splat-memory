@@ -30,10 +30,14 @@ python main.py --image path/to/photo.jpg --interactive
 
 # Additional objects to detect (merged with auto-discovered tags)
 python main.py --image photo.jpg --detect "chair" "table" "lamp"
+
+# Gemini tagger: use Gemini 2.5 Flash instead of RAM++ + Claude filter
+python main.py --image photo.jpg --gemini-tags
 ```
 
 ## Environment Variables
 - `ANTHROPIC_API_KEY` — required for reasoning/llm.py (Claude Sonnet 4)
+- `GEMINI_API_KEY` — required for Gemini tagger (Gemini 2.5 Flash)
 - `DEVICE` — optional, defaults to auto-detect (cuda/cpu)
 
 ## Architecture
@@ -41,6 +45,7 @@ python main.py --image photo.jpg --detect "chair" "table" "lamp"
 perception/          # Image → detections, masks, depth
   tagger.py          # RAM++ image tagging (auto-discover objects)
   tag_filter.py      # Claude-based tag filtering (remove non-physical tags)
+  gemini_tagger.py   # Gemini 2.5 Flash tagging (alternative to RAM++ + Claude filter)
   detector.py        # Grounding DINO per-tag detection (fallback: Florence-2)
   segmentor.py       # SAM2 with bbox prompts (fallback: SAM)
   depth.py           # Depth Anything V2 METRIC variant
@@ -64,7 +69,7 @@ docs/                # API reference, iPhone guide, SDK guide, pipeline diagram
 
 ## Data Flow (main.py → analyze_image_full)
 1. **EXIF extraction** (`calibration.py`): extract FOV from image EXIF before RGB conversion (priority: user override > EXIF > 70° default)
-2. **Tagging** (`tagger.py` → `tag_filter.py`): RAM++ discovers tags → Claude filters non-physical ones → merge user `detect` objects + spatial anchors
+2. **Tagging** (`tagger.py` → `tag_filter.py`): RAM++ discovers tags → Claude filters non-physical ones → merge user `detect` objects + spatial anchors.  **Alt**: `--gemini-tags` uses Gemini 2.5 Flash for tagging (skips RAM++ and Claude filter)
 3. **Detection** (`detector.py`): per-tag Grounding DINO with confidence overrides → cross-tag NMS
 4. **Segmentation** (`segmentor.py`): SAM2 masks from detection bboxes
 5. **Depth** (`depth.py`): Depth Anything V2 metric depth map
@@ -77,7 +82,7 @@ docs/                # API reference, iPhone guide, SDK guide, pipeline diagram
 
 ## API Endpoints
 - `POST /snap` — simple image upload (EXIF auto-extracted)
-- `POST /analyze` — image upload with options (detect, fov_degrees, focal_length_35mm)
+- `POST /analyze` — image upload with options (detect, fov_degrees, focal_length_35mm, use_gemini_tagger)
 - `POST /ask` — spatial Q&A with conversation history
 - `GET /scene/{id}/detections|masks|depth|annotated|pointcloud` — image outputs
 - `GET /scene/{id}/tags|objects|graph|graph/text` — data outputs
@@ -100,8 +105,8 @@ docs/                # API reference, iPhone guide, SDK guide, pipeline diagram
 9. **HEIC support**: `pillow-heif` registered at module level. PIL detects format by magic bytes, not file extension.
 
 ## Models Used
-- **Tagging**: `xinyu1205/recognize-anything-plus-model` (RAM++)
-- **Tag Filter**: Claude (via `perception/tag_filter.py`)
+- **Tagging**: `xinyu1205/recognize-anything-plus-model` (RAM++) or `gemini-2.5-flash` (alt)
+- **Tag Filter**: Claude (via `perception/tag_filter.py`) — skipped when using Gemini tagger
 - **Detection**: `IDEA-Research/grounding-dino-base` (primary), `microsoft/Florence-2-large` (fallback)
 - **Segmentation**: `facebook/sam2-hiera-large` (primary), `facebook/sam-vit-large` (fallback)
 - **Depth**: `depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf`

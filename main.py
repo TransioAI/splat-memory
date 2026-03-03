@@ -233,6 +233,7 @@ def analyze_image_full(
     detect: list[str] | None = None,
     use_tagger: bool = True,
     fov_override: float | None = None,
+    use_gemini_tagger: bool = False,
 ) -> tuple[str, SceneGraph]:
     """Run the full perception + fusion pipeline and build a SceneGraph.
 
@@ -259,6 +260,9 @@ def analyze_image_full(
         When True, use RAM++ → Claude filter → per-tag DINO pipeline.
     fov_override:
         User-provided FOV in degrees. Takes priority over EXIF and default.
+    use_gemini_tagger:
+        When True, use Gemini 2.5 Flash for tagging instead of RAM++ +
+        Claude filter.  Overrides use_tagger.
 
     Returns
     -------
@@ -305,7 +309,7 @@ def analyze_image_full(
 
     # 2. Perception: detect -> segment -> depth
     logger.info("Running perception pipeline on %dx%d image...", width, height)
-    result = pipeline.run(image, extra_objects=detect)
+    result = pipeline.run(image, extra_objects=detect, use_gemini_tagger=use_gemini_tagger)
     detections = result.detections
     masks = result.masks
     depth_map = result.depth_map
@@ -475,6 +479,7 @@ async def analyze(
     detect: str | None = Form(None),
     fov_degrees: float | None = Form(None),
     focal_length_35mm: float | None = Form(None),
+    use_gemini_tagger: bool = Form(False),
 ):
     """Upload an image and get back a scene graph with 3D spatial info.
 
@@ -490,6 +495,9 @@ async def analyze(
     focal_length_35mm:
         Optional 35mm-equivalent focal length. Converted to FOV if fov_degrees
         is not provided.
+    use_gemini_tagger:
+        When True, use Gemini 2.5 Flash for tagging instead of RAM++ +
+        Claude filter.
     """
     # Validate content type (allow HEIC which may report as application/octet-stream)
     if file.content_type and not (
@@ -518,6 +526,7 @@ async def analyze(
     try:
         scene_id, scene_graph = analyze_image_full(
             image, detect=detect_objects, fov_override=fov_override,
+            use_gemini_tagger=use_gemini_tagger,
         )
     except Exception as exc:
         logger.exception("Analysis failed.")
@@ -747,6 +756,11 @@ def main() -> None:
         help="Disable RAM++ tagging (use default DINO prompts instead)",
     )
     parser.add_argument(
+        "--gemini-tags",
+        action="store_true",
+        help="Use Gemini 2.5 Flash for tagging instead of RAM++ + Claude filter",
+    )
+    parser.add_argument(
         "--fov",
         type=float,
         default=None,
@@ -777,6 +791,7 @@ def main() -> None:
     use_tagger = not args.no_tagger
     scene_id, scene_graph = analyze_image_full(
         image, detect=args.detect, use_tagger=use_tagger, fov_override=args.fov,
+        use_gemini_tagger=args.gemini_tags,
     )
 
     # Print results

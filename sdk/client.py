@@ -300,6 +300,7 @@ class SplatMemory:
         detect: list[str] | None = None,
         fov_degrees: float | None = None,
         focal_length_35mm: float | None = None,
+        use_gemini_tagger: bool = False,
     ) -> Scene:
         """Upload an image with additional options.
 
@@ -314,6 +315,9 @@ class SplatMemory:
             Horizontal FOV override in degrees.
         focal_length_35mm:
             35mm-equivalent focal length in mm (converted to FOV).
+        use_gemini_tagger:
+            When True, use Gemini 2.5 Flash for tagging instead of
+            RAM++ + Claude filter.
         """
         filepath = Path(image_path)
         if not filepath.is_file():
@@ -338,6 +342,8 @@ class SplatMemory:
             form_fields["fov_degrees"] = str(fov_degrees)
         if focal_length_35mm is not None:
             form_fields["focal_length_35mm"] = str(focal_length_35mm)
+        if use_gemini_tagger:
+            form_fields["use_gemini_tagger"] = "true"
 
         field_parts = ""
         for name, value in form_fields.items():

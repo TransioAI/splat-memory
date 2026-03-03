@@ -87,6 +87,7 @@ class PerceptionPipeline:
         self._device = device
         self._tagger = None
         self._tag_filter = None
+        self._gemini_tagger = None
 
     @property
     def tagger(self):
@@ -105,6 +106,15 @@ class PerceptionPipeline:
 
             self._tag_filter = TagFilter()
         return self._tag_filter
+
+    @property
+    def gemini_tagger(self):
+        """Lazy-load the Gemini tagger."""
+        if self._gemini_tagger is None:
+            from perception.gemini_tagger import GeminiTagger
+
+            self._gemini_tagger = GeminiTagger()
+        return self._gemini_tagger
 
     # ------------------------------------------------------------------
     # Helpers
@@ -128,6 +138,7 @@ class PerceptionPipeline:
         self,
         image: PIL.Image.Image | str,
         extra_objects: list[str] | None = None,
+        use_gemini_tagger: bool = False,
     ) -> PerceptionResult:
         """Execute the full pipeline: detect -> segment -> depth.
 
@@ -136,10 +147,13 @@ class PerceptionPipeline:
         image:
             An RGB PIL image **or** a path to an image file.
         extra_objects:
-            Optional object categories to detect.  When the tagger is enabled,
+            Optional object categories to detect.  When a tagger is enabled,
             these are **merged** into the auto-discovered tags so that both
             automatic and user-specified objects are detected.  When the tagger
             is disabled, these are used as the sole detection targets.
+        use_gemini_tagger:
+            When True, use Gemini 2.5 Flash for image tagging instead of
+            RAM++ + Claude filter.  Tags are already filtered by Gemini.
 
         Returns
         -------
@@ -158,7 +172,33 @@ class PerceptionPipeline:
         _anchors_injected = None
         _pre_nms_detections = None
 
-        if self.use_tagger:
+        if use_gemini_tagger:
+            # Gemini tagger → per-tag DINO pipeline (no Claude filter needed)
+            # No spatial anchor injection — Gemini sees the actual image and
+            # already includes structural elements (wall, floor, ceiling, etc.)
+            # in its tags when they are visible.  Blind injection causes DINO
+            # to hallucinate objects at low confidence.
+            logger.info("Running Gemini tagging …")
+            _raw_tags = self.gemini_tagger.tag(image)
+            _filtered_tags = list(_raw_tags)  # already filtered by Gemini
+
+            # Merge user-specified objects into tags
+            if extra_objects:
+                for obj in extra_objects:
+                    if obj not in _filtered_tags:
+                        _filtered_tags.append(obj)
+                logger.info("Merged user-specified objects: %s", extra_objects)
+
+            if not _filtered_tags:
+                logger.warning("Gemini tagger returned empty list — falling back to defaults.")
+                detections = self.detector.detect(image, text_prompts=None)
+            else:
+                logger.info("Running per-tag detection for %d tags …", len(_filtered_tags))
+                detections, _pre_nms_detections = self.detector.detect_per_tag(
+                    image, _filtered_tags, return_pre_nms=True,
+                )
+
+        elif self.use_tagger:
             # RAM++ → Claude filter → per-tag DINO pipeline
             logger.info("Running RAM++ tagging …")
             _raw_tags = self.tagger.tag(image)
