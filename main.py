@@ -72,6 +72,7 @@ class DebugArtifacts:
     annotated_jpg: bytes | None = None
     # Interactive HTML
     pointcloud_html: str | None = None
+    floorplan_html: str | None = None
 
 
 # In-memory scene cache: scene_id -> (SceneGraph, SpatialReasoner, DebugArtifacts)
@@ -465,6 +466,93 @@ def analyze_image_full(
 
 
 # ---------------------------------------------------------------------------
+# Video analysis function
+# ---------------------------------------------------------------------------
+
+
+def analyze_video_full(
+    source: str | Path,
+    detect: list[str] | None = None,
+    use_gemini_tagger: bool = False,
+    every_n_frames: int = 30,
+    max_frames: int = 40,
+) -> tuple[str, SceneGraph]:
+    """Run the multi-view video pipeline and build a SceneGraph.
+
+    Parameters
+    ----------
+    source:
+        Path to video file (.mp4/.mov) or directory of images.
+    detect:
+        Additional object categories to detect.
+    use_gemini_tagger:
+        Use Gemini 2.5 Flash for tagging instead of RAM++ + Claude.
+    every_n_frames:
+        Keyframe extraction interval (video only).
+    max_frames:
+        Maximum keyframes to process.
+
+    Returns
+    -------
+    tuple[str, SceneGraph]
+        ``(scene_id, scene_graph)``
+    """
+    from video.video_pipeline import VideoPipeline
+
+    pipeline = VideoPipeline()
+    result = pipeline.run(
+        source=source,
+        detect=detect,
+        use_gemini_tagger=use_gemini_tagger,
+        every_n_frames=every_n_frames,
+        max_frames=max_frames,
+    )
+
+    scene_graph = result.scene_graph
+
+    # Generate debug artifacts
+    debug = DebugArtifacts(
+        scene_graph_json=scene_graph.model_dump(),
+        scene_graph_text=scene_graph.to_prompt_text(),
+    )
+
+    # Render multi-view point cloud with camera trajectory
+    try:
+        from visualization.pointcloud import render_multiview_pointcloud_3d
+
+        fig = render_multiview_pointcloud_3d(result.objects_3d, result.camera_poses)
+        debug.pointcloud_html = fig.to_html(include_plotlyjs=True, full_html=True)
+    except Exception:
+        logger.warning("Failed to render multi-view point cloud.", exc_info=True)
+
+    # Render top-down floorplan
+    try:
+        from visualization.floorplan import render_floorplan
+
+        fig = render_floorplan(result.objects_3d, result.camera_poses)
+        debug.floorplan_html = fig.to_html(include_plotlyjs=True, full_html=True)
+    except Exception:
+        logger.warning("Failed to render floorplan.", exc_info=True)
+
+    # Cache
+    scene_id = str(uuid.uuid4())
+    reasoner = SpatialReasoner()
+    reasoner.set_scene(scene_graph)
+    _scene_cache[scene_id] = (scene_graph, reasoner, debug)
+
+    logger.info(
+        "Video scene %s built: %d objects, %d relations, %d frames, scale=%.3f",
+        scene_id,
+        len(scene_graph.objects),
+        len(scene_graph.relations),
+        scene_graph.calibration.num_frames or 0,
+        scene_graph.calibration.scale_factor,
+    )
+
+    return scene_id, scene_graph
+
+
+# ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
 
@@ -522,6 +610,63 @@ async def analyze(
     except Exception as exc:
         logger.exception("Analysis failed.")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+
+    return AnalyzeResponse(
+        scene_id=scene_id,
+        scene_graph=scene_graph,
+        intrinsics_source=scene_graph.calibration.intrinsics_source,
+    )
+
+
+@app.post("/analyze_video", response_model=AnalyzeResponse)
+async def analyze_video(
+    file: UploadFile = File(...),  # noqa: B008
+    detect: str | None = Form(None),
+    use_gemini_tagger: bool = Form(False),
+    every_n_frames: int = Form(30),
+    max_frames: int = Form(40),
+):
+    """Upload a video and get a global 3D scene graph.
+
+    Parameters
+    ----------
+    file:
+        Video file (MP4, MOV, AVI, MKV).
+    detect:
+        Comma-separated list of additional objects to detect.
+    use_gemini_tagger:
+        Use Gemini 2.5 Flash for tagging.
+    every_n_frames:
+        Extract one keyframe every N video frames.
+    max_frames:
+        Maximum keyframes to process.
+    """
+    import tempfile
+
+    # Save uploaded video to temp file
+    suffix = Path(file.filename or "video.mp4").suffix
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        contents = await file.read()
+        tmp.write(contents)
+        tmp_path = tmp.name
+    try:
+
+        detect_objects = None
+        if detect:
+            detect_objects = [p.strip() for p in detect.split(",") if p.strip()]
+
+        scene_id, scene_graph = analyze_video_full(
+            source=tmp_path,
+            detect=detect_objects,
+            use_gemini_tagger=use_gemini_tagger,
+            every_n_frames=every_n_frames,
+            max_frames=max_frames,
+        )
+    except Exception as exc:
+        logger.exception("Video analysis failed.")
+        raise HTTPException(status_code=500, detail=f"Video analysis failed: {exc}") from exc
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 
     return AnalyzeResponse(
         scene_id=scene_id,
@@ -663,6 +808,18 @@ async def scene_pointcloud(scene_id: str):
     return HTMLResponse(content=debug.pointcloud_html)
 
 
+@app.get("/scene/{scene_id}/floorplan")
+async def scene_floorplan(scene_id: str):
+    """Top-down 2D floorplan (HTML — open in browser). Multi-view only."""
+    debug = _get_debug(scene_id)
+    if debug.floorplan_html is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Floorplan not available for scene '{scene_id}' (multi-view only).",
+        )
+    return HTMLResponse(content=debug.floorplan_html)
+
+
 @app.get("/scene/{scene_id}/tags")
 async def scene_tags(scene_id: str):
     """Raw and filtered tags used for detection (JSON)."""
@@ -722,6 +879,8 @@ def main() -> None:
         description="Splat Memory: Single-image spatial reasoning",
     )
     parser.add_argument("--image", type=str, help="Path to input image")
+    parser.add_argument("--video", type=str, help="Path to video file (.mp4/.mov)")
+    parser.add_argument("--frames", type=str, help="Path to directory of image frames")
     parser.add_argument(
         "--detect",
         type=str,
@@ -747,10 +906,27 @@ def main() -> None:
         help="Disable RAM++ tagging (use default DINO prompts instead)",
     )
     parser.add_argument(
+        "--gemini-tags",
+        action="store_true",
+        help="Use Gemini 2.5 Flash for tagging instead of RAM++ + Claude filter",
+    )
+    parser.add_argument(
         "--fov",
         type=float,
         default=None,
         help="Override horizontal FOV in degrees (default: auto from EXIF or 70°)",
+    )
+    parser.add_argument(
+        "--every-n-frames",
+        type=int,
+        default=30,
+        help="Extract one keyframe every N video frames (default: 30)",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=40,
+        help="Maximum keyframes to process (default: 40)",
     )
     args = parser.parse_args()
 
@@ -761,34 +937,63 @@ def main() -> None:
         uvicorn.run(app, host=args.host, port=args.port)
         return
 
-    if not args.image:
+    # --- CLI: video or frames mode ---
+    if args.video or args.frames:
+        source = args.video or args.frames
+        source_path = Path(source)
+        if not source_path.exists():
+            logger.error("Source not found: %s", source_path)
+            sys.exit(1)
+
+        logger.info("Analyzing video/frames: %s", source_path)
+        scene_id, scene_graph = analyze_video_full(
+            source=str(source_path),
+            detect=args.detect,
+            use_gemini_tagger=args.gemini_tags,
+            every_n_frames=args.every_n_frames,
+            max_frames=args.max_frames,
+        )
+
+        print("\n" + scene_graph.to_prompt_text())
+        print(f"\nScene ID: {scene_id}")
+        print(f"Objects: {len(scene_graph.objects)}")
+        print(f"Relations: {len(scene_graph.relations)}")
+        print(f"Scale factor: {scene_graph.calibration.scale_factor:.3f}")
+        cal = scene_graph.calibration
+        print(f"Frames: {cal.num_frames}")
+        print(f"Coordinate frame: {cal.coordinate_frame}")
+        if cal.reference_object:
+            print(f"Reference object: {cal.reference_object}")
+        if cal.scale_warning:
+            print(f"WARNING: {cal.scale_warning}")
+
+    elif args.image:
+        # --- CLI: analyze a single image ---
+        image_path = Path(args.image)
+        if not image_path.exists():
+            logger.error("Image not found: %s", image_path)
+            sys.exit(1)
+
+        logger.info("Loading image: %s", image_path)
+        image = Image.open(image_path)  # Don't convert yet — preserve EXIF
+
+        use_tagger = not args.no_tagger
+        scene_id, scene_graph = analyze_image_full(
+            image, detect=args.detect, use_tagger=use_tagger, fov_override=args.fov,
+        )
+
+        print("\n" + scene_graph.to_prompt_text())
+        print(f"\nScene ID: {scene_id}")
+        print(f"Objects: {len(scene_graph.objects)}")
+        print(f"Relations: {len(scene_graph.relations)}")
+        print(f"Scale factor: {scene_graph.calibration.scale_factor:.3f}")
+        cal = scene_graph.calibration
+        print(f"FOV: {cal.fov_degrees:.1f}° ({cal.intrinsics_source})")
+        if cal.reference_object:
+            print(f"Reference object: {cal.reference_object}")
+    else:
         parser.print_help()
         return
-
-    # --- CLI: analyze a single image ---
-    image_path = Path(args.image)
-    if not image_path.exists():
-        logger.error("Image not found: %s", image_path)
-        sys.exit(1)
-
-    logger.info("Loading image: %s", image_path)
-    image = Image.open(image_path)  # Don't convert yet — preserve EXIF
-
-    use_tagger = not args.no_tagger
-    scene_id, scene_graph = analyze_image_full(
-        image, detect=args.detect, use_tagger=use_tagger, fov_override=args.fov,
-    )
-
-    # Print results
-    print("\n" + scene_graph.to_prompt_text())
-    print(f"\nScene ID: {scene_id}")
-    print(f"Objects: {len(scene_graph.objects)}")
-    print(f"Relations: {len(scene_graph.relations)}")
-    print(f"Scale factor: {scene_graph.calibration.scale_factor:.3f}")
-    cal = scene_graph.calibration
-    print(f"FOV: {cal.fov_degrees:.1f}° ({cal.intrinsics_source})")
-    if scene_graph.calibration.reference_object:
-        print(f"Reference object: {scene_graph.calibration.reference_object}")
 
     # --- Interactive Q&A mode ---
     if args.interactive:

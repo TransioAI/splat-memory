@@ -365,6 +365,79 @@ class SplatMemory:
         self._last_scene_id = scene.scene_id
         return scene
 
+    def analyze_video(
+        self,
+        video_path: str | Path,
+        detect: list[str] | None = None,
+        use_gemini_tagger: bool = False,
+        every_n_frames: int = 30,
+        max_frames: int = 40,
+    ) -> Scene:
+        """Upload a video and get a global 3D scene graph.
+
+        Parameters
+        ----------
+        video_path:
+            Path to video file (.mp4, .mov).
+        detect:
+            Additional objects to detect.
+        use_gemini_tagger:
+            Use Gemini for tagging.
+        every_n_frames:
+            Keyframe extraction interval.
+        max_frames:
+            Maximum keyframes.
+        """
+        filepath = Path(video_path)
+        if not filepath.is_file():
+            raise FileNotFoundError(f"File not found: {filepath}")
+
+        boundary = "----SplatMemoryBoundary"
+        parts = []
+
+        # File part
+        parts.append(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filepath.name}"\r\n'
+            f"Content-Type: application/octet-stream\r\n"
+            f"\r\n"
+        )
+
+        # Form fields
+        form_fields = {}
+        if detect:
+            form_fields["detect"] = ",".join(detect)
+        if use_gemini_tagger:
+            form_fields["use_gemini_tagger"] = "true"
+        form_fields["every_n_frames"] = str(every_n_frames)
+        form_fields["max_frames"] = str(max_frames)
+
+        field_parts = ""
+        for name, value in form_fields.items():
+            field_parts += (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n'
+                f"\r\n"
+                f"{value}\r\n"
+            )
+
+        body = parts[0].encode()
+        body += filepath.read_bytes()
+        body += f"\r\n{field_parts}--{boundary}--\r\n".encode()
+
+        data = json.loads(
+            self._request(
+                "POST", "/analyze_video",
+                data=body,
+                headers={
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                },
+            )
+        )
+        scene = self._parse_scene(data)
+        self._last_scene_id = scene.scene_id
+        return scene
+
     def ask(self, question: str, scene_id: str | None = None) -> str:
         """Ask a spatial question about a scene.
 
@@ -420,6 +493,11 @@ class SplatMemory:
     def save_pointcloud(self, path: str, scene_id: str | None = None) -> None:
         """Save interactive 3D point cloud HTML to a file."""
         data = self._get(f"{self._scene_path(scene_id)}/pointcloud")
+        Path(path).write_bytes(data)
+
+    def save_floorplan(self, path: str, scene_id: str | None = None) -> None:
+        """Save top-down floorplan HTML to a file (multi-view only)."""
+        data = self._get(f"{self._scene_path(scene_id)}/floorplan")
         Path(path).write_bytes(data)
 
     def get_tags(self, scene_id: str | None = None) -> dict:

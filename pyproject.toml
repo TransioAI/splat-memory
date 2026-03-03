@@ -42,7 +42,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["perception", "fusion", "scene", "reasoning", "visualization"]
+packages = ["perception", "fusion", "scene", "reasoning", "visualization", "video"]
 
 [tool.ruff]
 line-length = 100

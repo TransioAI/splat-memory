@@ -186,3 +186,93 @@ def render_pointcloud_3d(
         len(fig.data),
     )
     return fig
+
+
+def render_multiview_pointcloud_3d(
+    objects_3d: list[Object3D],
+    camera_poses: list | None = None,
+    max_points_per_object: int = 5000,
+    show_camera_trajectory: bool = True,
+    output_html: str | None = None,
+) -> go.Figure:
+    """Render merged multi-view point cloud with camera trajectory.
+
+    Extends ``render_pointcloud_3d()`` with:
+    - Camera positions shown as markers along a polyline
+    - Camera trajectory colored blue→red for time progression
+    - World-frame axis labels
+
+    Parameters
+    ----------
+    objects_3d:
+        List of Object3D instances in world frame.
+    camera_poses:
+        List of CameraPose instances (or dicts with ``position_world``).
+    max_points_per_object:
+        Max points per object for browser performance.
+    show_camera_trajectory:
+        Whether to draw the camera path.
+    output_html:
+        Optional file path for standalone HTML output.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    import plotly.graph_objects as go
+
+    # Start with standard point cloud rendering
+    fig = render_pointcloud_3d(objects_3d, max_points_per_object)
+
+    # Add camera trajectory
+    if camera_poses and show_camera_trajectory:
+        positions = np.array([
+            cp.position_world if hasattr(cp, "position_world") else cp["position"]
+            for cp in camera_poses
+        ])
+
+        frame_labels = [
+            str(cp.frame_idx if hasattr(cp, "frame_idx") else cp.get("frame_idx", i))
+            for i, cp in enumerate(camera_poses)
+        ]
+
+        # Trajectory line
+        fig.add_trace(go.Scatter3d(
+            x=positions[:, 0],
+            y=positions[:, 1],
+            z=positions[:, 2],
+            mode="lines+markers",
+            marker=dict(
+                size=4,
+                color=list(range(len(positions))),
+                colorscale="Bluered",
+                showscale=False,
+            ),
+            line=dict(color="gray", width=2),
+            name="Camera trajectory",
+            hovertemplate=(
+                "Frame %{text}<br>"
+                "x: %{x:.2f}m<br>"
+                "y: %{y:.2f}m<br>"
+                "z: %{z:.2f}m"
+                "<extra></extra>"
+            ),
+            text=frame_labels,
+        ))
+
+    # Update axis labels for world frame
+    fig.update_layout(
+        scene=dict(
+            xaxis_title="X [m]",
+            yaxis_title="Y [m]",
+            zaxis_title="Z [m]",
+            aspectmode="data",
+        ),
+        title="Multi-View 3D Scene (World Frame)",
+    )
+
+    if output_html:
+        fig.write_html(output_html)
+        logger.info("Saved multi-view point cloud to %s", output_html)
+
+    return fig
