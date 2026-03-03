@@ -18,13 +18,6 @@ KNOWN_SIZES: dict[str, float] = {
     "doorway": 2.03,
     "countertop": 0.91,
     "counter": 0.91,
-    "person": 1.70,
-    "human": 1.70,
-    "dining table": 0.76,
-    "table": 0.76,
-    "chair": 0.85,
-    "refrigerator": 1.70,
-    "fridge": 1.70,
 }
 
 

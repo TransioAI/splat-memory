@@ -18,9 +18,13 @@ dependencies = [
     "python-multipart>=0.0.18",
     "accelerate>=1.2.0",
     "scipy>=1.14.0",
+    "huggingface-hub>=0.20.0",
 ]
 
 [project.optional-dependencies]
+ram = [
+    "recognize-anything @ git+https://github.com/xinyu1205/recognize-anything.git",
+]
 dev = [
     "ruff>=0.8.0",
     "pytest>=8.0.0",

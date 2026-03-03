@@ -24,7 +24,7 @@ class DepthEstimator:
     The model is lazy-loaded on the first call to ``estimate()``.
     """
 
-    MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Large"
+    MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf"
 
     def __init__(self, device: str = "cuda") -> None:
         self.device = device if torch.cuda.is_available() else "cpu"

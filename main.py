@@ -65,13 +65,13 @@ class AskResponse(BaseModel):
 _pipeline = None
 
 
-def get_pipeline():
+def get_pipeline(use_tagger: bool = True):
     """Lazily initialise the perception pipeline (heavy model loading)."""
     global _pipeline
     if _pipeline is None:
         from perception.pipeline import PerceptionPipeline
 
-        _pipeline = PerceptionPipeline()
+        _pipeline = PerceptionPipeline(use_tagger=use_tagger)
     return _pipeline
 
 
@@ -83,6 +83,7 @@ def get_pipeline():
 def analyze_image_full(
     image: Image.Image,
     text_prompts: list[str] | None = None,
+    use_tagger: bool = True,
 ) -> tuple[str, SceneGraph]:
     """Run the full perception + fusion pipeline and build a SceneGraph.
 
@@ -102,6 +103,10 @@ def analyze_image_full(
         An RGB PIL image.
     text_prompts:
         Optional list of object categories to detect beyond the defaults.
+        When provided, the RAM++ tagger is skipped.
+    use_tagger:
+        When True, use RAM++ → Claude filter → per-tag DINO pipeline.
+        Ignored when ``text_prompts`` is provided.
 
     Returns
     -------
@@ -112,7 +117,7 @@ def analyze_image_full(
     from fusion.calibration import apply_scale, auto_calibrate_scale, estimate_intrinsics
     from fusion.spatial_relations import compute_spatial_relations
 
-    pipeline = get_pipeline()
+    pipeline = get_pipeline(use_tagger=use_tagger)
     width, height = image.size
 
     # 1. Perception: detect -> segment -> depth
@@ -348,6 +353,11 @@ def main() -> None:
         default="cuda",
         help="Device for models (default: cuda)",
     )
+    parser.add_argument(
+        "--no-tagger",
+        action="store_true",
+        help="Disable RAM++ tagging (use default DINO prompts instead)",
+    )
     args = parser.parse_args()
 
     if args.serve:
@@ -370,7 +380,10 @@ def main() -> None:
     logger.info("Loading image: %s", image_path)
     image = Image.open(image_path).convert("RGB")
 
-    scene_id, scene_graph = analyze_image_full(image, text_prompts=args.prompts)
+    use_tagger = not args.no_tagger
+    scene_id, scene_graph = analyze_image_full(
+        image, text_prompts=args.prompts, use_tagger=use_tagger
+    )
 
     # Print results
     print("\n" + scene_graph.to_prompt_text())

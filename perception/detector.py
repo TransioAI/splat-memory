@@ -15,6 +15,15 @@ DEFAULT_TEXT_PROMPT = (
     "monitor. lamp. window. shelf. cabinet. countertop. appliance."
 )
 
+# Per-tag confidence threshold overrides.  Tags not listed here use the
+# detector's default ``confidence_threshold`` (typically 0.3).
+TAG_CONFIDENCE_OVERRIDES: dict[str, float] = {
+    "door": 0.5,
+    "doorway": 0.5,
+    "countertop": 0.5,
+    "counter": 0.5,
+}
+
 
 @dataclass
 class Detection:
@@ -112,7 +121,7 @@ class ObjectDetector:
         results = self._processor.post_process_grounded_object_detection(
             outputs,
             inputs["input_ids"],
-            box_threshold=self.confidence_threshold,
+            threshold=self.confidence_threshold,
             text_threshold=self.confidence_threshold,
             target_sizes=[image.size[::-1]],  # (height, width)
         )[0]
@@ -184,6 +193,77 @@ class ObjectDetector:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def detect_per_tag(
+        self,
+        image: PIL.Image.Image,
+        tags: list[str],
+        iou_threshold: float = 0.5,
+    ) -> list[Detection]:
+        """Detect objects by running DINO once per tag, then merging with NMS.
+
+        This produces more accurate detections than sending all tags at once,
+        at the cost of N forward passes (one per tag).
+
+        Parameters
+        ----------
+        image:
+            An RGB PIL image.
+        tags:
+            List of individual object labels (e.g. ``["couch", "table", "lamp"]``).
+        iou_threshold:
+            IoU threshold for cross-category NMS.
+
+        Returns
+        -------
+        list[Detection]
+            Merged, NMS-filtered detections from all per-tag runs.
+        """
+        self._ensure_model()
+        image = image.convert("RGB")
+
+        all_detections: list[Detection] = []
+        default_threshold = self.confidence_threshold
+        for tag in tags:
+            tag_clean = tag.strip().rstrip(".")
+            text_prompt = tag_clean + "."
+
+            # Apply per-tag threshold override if configured
+            override = TAG_CONFIDENCE_OVERRIDES.get(tag_clean.lower())
+            if override is not None:
+                self.confidence_threshold = override
+            else:
+                self.confidence_threshold = default_threshold
+
+            logger.debug("Running detection for tag: '%s' (threshold=%.2f)", tag_clean, self.confidence_threshold)
+
+            if self._backend == "grounding_dino":
+                dets = self._detect_grounding_dino(image, text_prompt)
+            else:
+                dets = self._detect_florence2(image, text_prompt)
+
+            logger.debug("  Tag '%s': %d detections", tag_clean, len(dets))
+            all_detections.extend(dets)
+
+        # Restore default threshold
+        self.confidence_threshold = default_threshold
+
+        logger.info(
+            "Per-tag detection: %d tags → %d raw detections",
+            len(tags),
+            len(all_detections),
+        )
+
+        from perception.nms import cross_category_nms
+
+        filtered = cross_category_nms(all_detections, iou_threshold=iou_threshold)
+
+        logger.info(
+            "After NMS: %d detections (backend=%s)",
+            len(filtered),
+            self._backend,
+        )
+        return filtered
 
     def detect(
         self,
