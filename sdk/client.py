@@ -3,7 +3,7 @@
 Usage:
     from sdk.client import SplatMemory
 
-    client = SplatMemory("192.168.1.50")
+    client = SplatMemory("172.31.39.38")
     scene = client.snap("IMG_1234.heic")
     print(scene.objects)
 

@@ -9,8 +9,8 @@ Zero-dependency Python client for the Splat Memory API. No pip install needed â€
 ```python
 from sdk import SplatMemory
 
-client = SplatMemory("192.168.1.50")        # default port 8000
-client = SplatMemory("192.168.1.50", 9000)  # custom port
+client = SplatMemory("172.31.39.38")        # default port 8000
+client = SplatMemory("172.31.39.38", 9000)  # custom port
 ```
 
 ---
@@ -197,7 +197,7 @@ print(status)
 ```python
 from sdk import SplatMemory, SplatMemoryError
 
-client = SplatMemory("192.168.1.50")
+client = SplatMemory("172.31.39.38")
 
 try:
     scene = client.snap("nonexistent.jpg")
@@ -218,7 +218,7 @@ except SplatMemoryError as e:
 from sdk import SplatMemory
 
 # Connect
-client = SplatMemory("192.168.1.50")
+client = SplatMemory("172.31.39.38")
 
 # Analyze
 scene = client.snap("IMG_1234.heic")

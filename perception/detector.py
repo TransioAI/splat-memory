@@ -139,6 +139,50 @@ class ObjectDetector:
             )
         return detections
 
+
+    def _detect_grounding_dino_batch(
+        self,
+        image: PIL.Image.Image,
+        text_prompts: list[str],
+        threshold: float,
+    ) -> list[list[Detection]]:
+        """Run batched Grounding DINO inference — one forward pass for N prompts."""
+        batch_size = len(text_prompts)
+        images = [image] * batch_size
+        target_sizes = [image.size[::-1]] * batch_size  # (height, width)
+
+        inputs = self._processor(
+            images=images, text=text_prompts, return_tensors="pt", padding=True,
+        ).to(self.device)
+
+        with torch.no_grad():
+            outputs = self._model(**inputs)
+
+        results = self._processor.post_process_grounded_object_detection(
+            outputs,
+            inputs["input_ids"],
+            threshold=threshold,
+            text_threshold=threshold,
+            target_sizes=target_sizes,
+        )
+
+        batch_detections: list[list[Detection]] = []
+        for result in results:
+            detections: list[Detection] = []
+            for box, label, score in zip(
+                result["boxes"], result["labels"], result["scores"], strict=False
+            ):
+                detections.append(
+                    Detection(
+                        bbox=box.tolist() if torch.is_tensor(box) else list(box),
+                        label=label.strip().rstrip("."),
+                        confidence=float(score),
+                    )
+                )
+            batch_detections.append(detections)
+
+        return batch_detections
+
     def _detect_florence2(
         self, image: PIL.Image.Image, text_prompt: str
     ) -> list[Detection]:
