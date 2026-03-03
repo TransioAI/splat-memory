@@ -30,10 +30,14 @@ python main.py --image path/to/photo.jpg --interactive
 
 # Additional objects to detect (merged with auto-discovered tags)
 python main.py --image photo.jpg --detect "chair" "table" "lamp"
+
+# SoM pipeline: SAM2 auto-mask + Gemini labeling (requires GEMINI_API_KEY)
+python main.py --image photo.jpg --som
 ```
 
 ## Environment Variables
 - `ANTHROPIC_API_KEY` — required for reasoning/llm.py (Claude Sonnet 4)
+- `GEMINI_API_KEY` — required for SoM pipeline (Gemini 2.5 Flash labeling)
 - `DEVICE` — optional, defaults to auto-detect (cuda/cpu)
 
 ## Architecture
@@ -43,8 +47,10 @@ perception/          # Image → detections, masks, depth
   tag_filter.py      # Claude-based tag filtering (remove non-physical tags)
   detector.py        # Grounding DINO per-tag detection (fallback: Florence-2)
   segmentor.py       # SAM2 with bbox prompts (fallback: SAM)
+  auto_mask.py       # SAM2 automatic mask generation (SoM pipeline)
+  som_labeler.py     # SoM: numbered markers + Gemini 2.5 Flash labeling
   depth.py           # Depth Anything V2 METRIC variant
-  pipeline.py        # Orchestrator: tag → detect → segment → depth
+  pipeline.py        # Orchestrator: tag → detect → segment → depth (+ SoM mode)
 fusion/              # 2D+depth → 3D scene
   backproject.py     # Pinhole camera back-projection
   calibration.py     # EXIF FOV extraction + intrinsics + auto-scale
@@ -75,11 +81,20 @@ docs/                # API reference, iPhone guide, SDK guide, pipeline diagram
 10. **Debug artifacts**: render annotated image, masks, depth heatmap, point cloud (in-memory)
 11. **Reasoning** (`llm.py`): scene text + user question → Claude Sonnet 4 answer (up to 50 turns)
 
+## SoM Pipeline (alternative)
+**Set-of-Mark**: segment first, then label — flips the standard detect-then-segment approach.
+- **Flow**: SAM2 auto-mask → numbered marker overlay → Gemini 2.5 Flash labels each segment → depth → 3D
+- **When to use**: When tag-based detection mislabels objects (e.g. kitchen counter as "desk")
+- **CLI**: `python main.py --image photo.jpg --som`
+- **API**: `POST /analyze` with `use_som=true`
+- **SDK**: `client.analyze("photo.jpg", use_som=True)`
+- Requires `GEMINI_API_KEY` env var
+
 ## API Endpoints
 - `POST /snap` — simple image upload (EXIF auto-extracted)
-- `POST /analyze` — image upload with options (detect, fov_degrees, focal_length_35mm)
+- `POST /analyze` — image upload with options (detect, fov_degrees, focal_length_35mm, use_som)
 - `POST /ask` — spatial Q&A with conversation history
-- `GET /scene/{id}/detections|masks|depth|annotated|pointcloud` — image outputs
+- `GET /scene/{id}/detections|masks|depth|annotated|pointcloud|som` — image outputs
 - `GET /scene/{id}/tags|objects|graph|graph/text` — data outputs
 - `GET /health` — server health check
 
@@ -104,6 +119,8 @@ docs/                # API reference, iPhone guide, SDK guide, pipeline diagram
 - **Tag Filter**: Claude (via `perception/tag_filter.py`)
 - **Detection**: `IDEA-Research/grounding-dino-base` (primary), `microsoft/Florence-2-large` (fallback)
 - **Segmentation**: `facebook/sam2-hiera-large` (primary), `facebook/sam-vit-large` (fallback)
+- **Auto-mask**: `facebook/sam2-hiera-large` via `pipeline("mask-generation")` (SoM mode)
+- **SoM Labeling**: `gemini-2.5-flash` via `google-genai` (SoM mode)
 - **Depth**: `depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf`
 - **Reasoning**: `claude-sonnet-4-20250514`
 

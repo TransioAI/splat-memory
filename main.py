@@ -70,6 +70,7 @@ class DebugArtifacts:
     masks_jpg: bytes | None = None
     depth_jpg: bytes | None = None
     annotated_jpg: bytes | None = None
+    som_marked_jpg: bytes | None = None
     # Interactive HTML
     pointcloud_html: str | None = None
 
@@ -233,6 +234,7 @@ def analyze_image_full(
     detect: list[str] | None = None,
     use_tagger: bool = True,
     fov_override: float | None = None,
+    use_som: bool = False,
 ) -> tuple[str, SceneGraph]:
     """Run the full perception + fusion pipeline and build a SceneGraph.
 
@@ -259,6 +261,9 @@ def analyze_image_full(
         When True, use RAM++ → Claude filter → per-tag DINO pipeline.
     fov_override:
         User-provided FOV in degrees. Takes priority over EXIF and default.
+    use_som:
+        When True, use the Set-of-Mark pipeline (SAM2 auto-mask + Gemini
+        labeling) instead of the standard detection flow.
 
     Returns
     -------
@@ -305,7 +310,7 @@ def analyze_image_full(
 
     # 2. Perception: detect -> segment -> depth
     logger.info("Running perception pipeline on %dx%d image...", width, height)
-    result = pipeline.run(image, extra_objects=detect)
+    result = pipeline.run(image, extra_objects=detect, use_som=use_som)
     detections = result.detections
     masks = result.masks
     depth_map = result.depth_map
@@ -445,6 +450,14 @@ def analyze_image_full(
     except Exception:
         logger.warning("Failed to render point cloud.", exc_info=True)
 
+    # SoM marked image (if SoM pipeline was used)
+    if result.som_marked_image is not None:
+        try:
+            marked_bgr = cv2.cvtColor(np.array(result.som_marked_image), cv2.COLOR_RGB2BGR)
+            debug.som_marked_jpg = _encode_jpg(marked_bgr)
+        except Exception:
+            logger.warning("Failed to render SoM marked image.", exc_info=True)
+
     # 10. Cache
     scene_id = str(uuid.uuid4())
     reasoner = SpatialReasoner()
@@ -475,6 +488,7 @@ async def analyze(
     detect: str | None = Form(None),
     fov_degrees: float | None = Form(None),
     focal_length_35mm: float | None = Form(None),
+    use_som: bool = Form(False),
 ):
     """Upload an image and get back a scene graph with 3D spatial info.
 
@@ -490,6 +504,9 @@ async def analyze(
     focal_length_35mm:
         Optional 35mm-equivalent focal length. Converted to FOV if fov_degrees
         is not provided.
+    use_som:
+        When True, use the Set-of-Mark pipeline (SAM2 auto-mask + Gemini
+        labeling) instead of the standard detection flow.
     """
     # Validate content type (allow HEIC which may report as application/octet-stream)
     if file.content_type and not (
@@ -517,7 +534,7 @@ async def analyze(
 
     try:
         scene_id, scene_graph = analyze_image_full(
-            image, detect=detect_objects, fov_override=fov_override,
+            image, detect=detect_objects, fov_override=fov_override, use_som=use_som,
         )
     except Exception as exc:
         logger.exception("Analysis failed.")
@@ -651,6 +668,13 @@ async def scene_annotated(scene_id: str):
     return _require_jpg(debug.annotated_jpg, scene_id, "annotated")
 
 
+@app.get("/scene/{scene_id}/som")
+async def scene_som(scene_id: str):
+    """SoM marked image with numbered segment markers (JPEG)."""
+    debug = _get_debug(scene_id)
+    return _require_jpg(debug.som_marked_jpg, scene_id, "som_marked")
+
+
 @app.get("/scene/{scene_id}/pointcloud")
 async def scene_pointcloud(scene_id: str):
     """Interactive 3D point cloud (HTML — open in browser)."""
@@ -747,6 +771,11 @@ def main() -> None:
         help="Disable RAM++ tagging (use default DINO prompts instead)",
     )
     parser.add_argument(
+        "--som",
+        action="store_true",
+        help="Use Set-of-Mark pipeline (SAM2 auto-mask + Gemini labeling) instead of DINO",
+    )
+    parser.add_argument(
         "--fov",
         type=float,
         default=None,
@@ -777,6 +806,7 @@ def main() -> None:
     use_tagger = not args.no_tagger
     scene_id, scene_graph = analyze_image_full(
         image, detect=args.detect, use_tagger=use_tagger, fov_override=args.fov,
+        use_som=args.som,
     )
 
     # Print results

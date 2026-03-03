@@ -37,6 +37,9 @@ class PerceptionResult:
     anchors_injected: list[str] | None = None
     pre_nms_detections: list[Detection] | None = None
 
+    # SoM mode: the marked image with numbered overlays
+    som_marked_image: PIL.Image.Image | None = None
+
     @property
     def num_objects(self) -> int:
         return len(self.detections)
@@ -87,6 +90,8 @@ class PerceptionPipeline:
         self._device = device
         self._tagger = None
         self._tag_filter = None
+        self._auto_mask_gen = None
+        self._som_labeler = None
 
     @property
     def tagger(self):
@@ -106,6 +111,24 @@ class PerceptionPipeline:
             self._tag_filter = TagFilter()
         return self._tag_filter
 
+    @property
+    def auto_mask_gen(self):
+        """Lazy-load the SAM2 auto-mask generator."""
+        if self._auto_mask_gen is None:
+            from perception.auto_mask import AutoMaskGenerator
+
+            self._auto_mask_gen = AutoMaskGenerator(device=self._device)
+        return self._auto_mask_gen
+
+    @property
+    def som_labeler(self):
+        """Lazy-load the SoM labeler (Gemini)."""
+        if self._som_labeler is None:
+            from perception.som_labeler import SoMLabeler
+
+            self._som_labeler = SoMLabeler()
+        return self._som_labeler
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -121,6 +144,78 @@ class PerceptionPipeline:
         return image.convert("RGB")
 
     # ------------------------------------------------------------------
+    # SoM pipeline
+    # ------------------------------------------------------------------
+
+    def _run_som(self, image: PIL.Image.Image) -> PerceptionResult:
+        """Run the Set-of-Mark pipeline: auto-mask → mark → Gemini label → depth.
+
+        Parameters
+        ----------
+        image:
+            An RGB PIL image.
+
+        Returns
+        -------
+        PerceptionResult
+            Detections (from Gemini labels), masks (from SAM2 auto-mask),
+            metric depth map, and image size.  The ``som_marked_image`` field
+            is populated with the numbered-marker overlay.
+        """
+        image_size = image.size
+
+        # 1. Auto-mask: SAM2 segments everything
+        logger.info("SoM: running SAM2 auto-mask generation …")
+        masks, scores = self.auto_mask_gen.generate(image)
+
+        if not masks:
+            logger.warning("SoM: no masks generated — returning empty result.")
+            depth_map = self.depth_estimator.estimate(image)
+            return PerceptionResult(
+                detections=[], masks=[], depth_map=depth_map,
+                image_size=image_size,
+            )
+
+        logger.info("SoM: %d masks after filtering", len(masks))
+
+        # 2. Draw numbered markers on mask centroids
+        marked_image, _centroids = self.som_labeler.draw_marks(image, masks, scores)
+
+        # 3. Send marked image to Gemini for labeling
+        labels = self.som_labeler.label_segments(marked_image, len(masks))
+
+        # 4. Convert labels + masks to Detection objects
+        detections, kept_indices = self.som_labeler.labels_to_detections(labels, masks)
+
+        # Keep only the masks that correspond to kept detections
+        kept_masks = [masks[i] for i in kept_indices]
+
+        if not detections:
+            logger.warning("SoM: no labeled detections — returning empty result.")
+            depth_map = self.depth_estimator.estimate(image)
+            return PerceptionResult(
+                detections=[], masks=[], depth_map=depth_map,
+                image_size=image_size,
+            )
+
+        # 5. Depth estimation
+        logger.info("SoM: running depth estimation …")
+        depth_map = self.depth_estimator.estimate(image)
+
+        result = PerceptionResult(
+            detections=detections,
+            masks=kept_masks,
+            depth_map=depth_map,
+            image_size=image_size,
+            som_marked_image=marked_image,
+        )
+        logger.info(
+            "SoM perception complete: %d objects, depth shape %s",
+            result.num_objects, depth_map.shape,
+        )
+        return result
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -128,6 +223,7 @@ class PerceptionPipeline:
         self,
         image: PIL.Image.Image | str,
         extra_objects: list[str] | None = None,
+        use_som: bool = False,
     ) -> PerceptionResult:
         """Execute the full pipeline: detect -> segment -> depth.
 
@@ -140,6 +236,9 @@ class PerceptionPipeline:
             these are **merged** into the auto-discovered tags so that both
             automatic and user-specified objects are detected.  When the tagger
             is disabled, these are used as the sole detection targets.
+        use_som:
+            When True, use the Set-of-Mark pipeline (SAM2 auto-mask + Gemini
+            labeling) instead of the standard tag → detect → segment flow.
 
         Returns
         -------
@@ -147,6 +246,10 @@ class PerceptionPipeline:
             Detections, masks, metric depth map, and image size.
         """
         image = self._load_image(image)
+
+        if use_som:
+            return self._run_som(image)
+
         image_size = image.size  # (width, height)
 
         # --- 1. Detection --------------------------------------------------

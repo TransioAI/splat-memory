@@ -300,6 +300,7 @@ class SplatMemory:
         detect: list[str] | None = None,
         fov_degrees: float | None = None,
         focal_length_35mm: float | None = None,
+        use_som: bool = False,
     ) -> Scene:
         """Upload an image with additional options.
 
@@ -314,6 +315,9 @@ class SplatMemory:
             Horizontal FOV override in degrees.
         focal_length_35mm:
             35mm-equivalent focal length in mm (converted to FOV).
+        use_som:
+            When True, use the Set-of-Mark pipeline (SAM2 auto-mask +
+            Gemini labeling) instead of the standard detection flow.
         """
         filepath = Path(image_path)
         if not filepath.is_file():
@@ -338,6 +342,8 @@ class SplatMemory:
             form_fields["fov_degrees"] = str(fov_degrees)
         if focal_length_35mm is not None:
             form_fields["focal_length_35mm"] = str(focal_length_35mm)
+        if use_som:
+            form_fields["use_som"] = "true"
 
         field_parts = ""
         for name, value in form_fields.items():
@@ -410,6 +416,11 @@ class SplatMemory:
     def save_depth(self, path: str, scene_id: str | None = None) -> None:
         """Save depth heatmap image to a file."""
         data = self._get(f"{self._scene_path(scene_id)}/depth")
+        Path(path).write_bytes(data)
+
+    def save_som(self, path: str, scene_id: str | None = None) -> None:
+        """Save SoM marked image (numbered segment markers) to a file."""
+        data = self._get(f"{self._scene_path(scene_id)}/som")
         Path(path).write_bytes(data)
 
     def save_annotated(self, path: str, scene_id: str | None = None) -> None:
