@@ -6,6 +6,53 @@ Upload a photo, get back a 3D scene graph with metric positions and dimensions f
 
 ---
 
+## POST /snap
+
+Upload an image and get a 3D scene graph. No extra parameters — just the image file.
+
+Designed for iPhone photos. EXIF metadata is auto-extracted for accurate FOV.
+
+**Content-Type:** `multipart/form-data`
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `file` | file | Yes | Image file (JPEG, PNG, HEIC/HEIF) |
+
+### Example
+
+```bash
+curl -X POST -F "file=@IMG_1234.heic" http://<server-ip>:8000/snap
+```
+
+### Response
+
+Same as `/analyze` — returns `scene_id`, `intrinsics_source`, and full `scene_graph`.
+
+```json
+{
+  "scene_id": "4e5b7228-b077-4afa-9208-e9c0927b4366",
+  "intrinsics_source": "exif",
+  "scene_graph": {
+    "objects": [...],
+    "relations": [...],
+    "calibration": {
+      "fov_degrees": 104.25,
+      "intrinsics_source": "exif",
+      "scale_factor": 1.0,
+      "reference_object": null,
+      "image_width": 4032,
+      "image_height": 2268
+    }
+  }
+}
+```
+
+Use the returned `scene_id` with `/ask` and `/scene/{scene_id}/*` endpoints.
+
+---
+
 ## POST /analyze
 
 Upload an image and receive a 3D scene graph.

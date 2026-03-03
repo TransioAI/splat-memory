@@ -530,6 +530,38 @@ async def analyze(
     )
 
 
+@app.post("/snap", response_model=AnalyzeResponse)
+async def snap(file: UploadFile = File(...)):  # noqa: B008
+    """Upload an image and get a 3D scene graph. No extra parameters needed.
+
+    Designed for iPhone photos — EXIF metadata is auto-extracted for accurate
+    FOV. Just upload the file and get results.
+    """
+    if file.content_type and not (
+        file.content_type.startswith("image/")
+        or file.content_type == "application/octet-stream"
+    ):
+        raise HTTPException(status_code=400, detail=f"Expected image, got {file.content_type}")
+
+    try:
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read image: {exc}") from exc
+
+    try:
+        scene_id, scene_graph = analyze_image_full(image)
+    except Exception as exc:
+        logger.exception("Analysis failed.")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+
+    return AnalyzeResponse(
+        scene_id=scene_id,
+        scene_graph=scene_graph,
+        intrinsics_source=scene_graph.calibration.intrinsics_source,
+    )
+
+
 @app.post("/ask", response_model=AskResponse)
 async def ask(request: AskRequest):
     """Ask a spatial reasoning question about a previously analyzed scene.
