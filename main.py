@@ -73,30 +73,6 @@ class DebugArtifacts:
     # Interactive HTML
     pointcloud_html: str | None = None
 
-    def available_artifacts(self) -> list[str]:
-        """Return names of non-None artifacts."""
-        mapping = self._artifact_map()
-        return [name for name, val in mapping.items() if val is not None]
-
-    def _artifact_map(self) -> dict[str, object]:
-        return {
-            "raw_tags": self.raw_tags,
-            "filtered_tags": {
-                "filtered_tags": self.filtered_tags,
-                "anchors_injected": self.anchors_injected,
-            }
-            if self.filtered_tags is not None
-            else None,
-            "detections_json": self.post_nms_detections,
-            "scene_graph": self.scene_graph_json,
-            "scene_graph_text": self.scene_graph_text,
-            "detections": self.detections_jpg,
-            "masks": self.masks_jpg,
-            "depth": self.depth_jpg,
-            "annotated": self.annotated_jpg,
-            "pointcloud": self.pointcloud_html,
-        }
-
 
 # In-memory scene cache: scene_id -> (SceneGraph, SpatialReasoner, DebugArtifacts)
 _scene_cache: dict[str, tuple[SceneGraph, SpatialReasoner, DebugArtifacts]] = {}
@@ -109,7 +85,6 @@ _scene_cache: dict[str, tuple[SceneGraph, SpatialReasoner, DebugArtifacts]] = {}
 class AnalyzeResponse(BaseModel):
     scene_id: str
     scene_graph: SceneGraph
-    debug_url: str
     intrinsics_source: str
 
 
@@ -255,7 +230,7 @@ def _render_pointcloud_html(objects_3d: list) -> str:
 
 def analyze_image_full(
     image: Image.Image,
-    text_prompts: list[str] | None = None,
+    detect: list[str] | None = None,
     use_tagger: bool = True,
     fov_override: float | None = None,
 ) -> tuple[str, SceneGraph]:
@@ -277,12 +252,11 @@ def analyze_image_full(
     ----------
     image:
         A PIL image (EXIF should still be intact — extract before .convert("RGB")).
-    text_prompts:
-        Optional list of object categories to detect beyond the defaults.
-        When provided, the RAM++ tagger is skipped.
+    detect:
+        Optional list of additional object categories to detect.  When the
+        tagger is enabled, these are merged into the auto-discovered tags.
     use_tagger:
         When True, use RAM++ → Claude filter → per-tag DINO pipeline.
-        Ignored when ``text_prompts`` is provided.
     fov_override:
         User-provided FOV in degrees. Takes priority over EXIF and default.
 
@@ -331,7 +305,7 @@ def analyze_image_full(
 
     # 2. Perception: detect -> segment -> depth
     logger.info("Running perception pipeline on %dx%d image...", width, height)
-    result = pipeline.run(image, text_prompts=text_prompts)
+    result = pipeline.run(image, extra_objects=detect)
     detections = result.detections
     masks = result.masks
     depth_map = result.depth_map
@@ -498,7 +472,7 @@ def analyze_image_full(
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(
     file: UploadFile = File(...),  # noqa: B008
-    prompts: str | None = Form(None),
+    detect: str | None = Form(None),
     fov_degrees: float | None = Form(None),
     focal_length_35mm: float | None = Form(None),
 ):
@@ -508,8 +482,9 @@ async def analyze(
     ----------
     file:
         Image file (JPEG, PNG, HEIC, etc.).
-    prompts:
+    detect:
         Optional comma-separated list of additional object categories to detect.
+        These are merged with auto-discovered tags from the image.
     fov_degrees:
         Optional horizontal FOV override in degrees. Takes priority over EXIF.
     focal_length_35mm:
@@ -529,9 +504,9 @@ async def analyze(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not read image: {exc}") from exc
 
-    text_prompts: list[str] | None = None
-    if prompts:
-        text_prompts = [p.strip() for p in prompts.split(",") if p.strip()]
+    detect_objects: list[str] | None = None
+    if detect:
+        detect_objects = [p.strip() for p in detect.split(",") if p.strip()]
 
     # Resolve FOV override: explicit fov_degrees > focal_length_35mm conversion
     fov_override: float | None = fov_degrees
@@ -542,7 +517,7 @@ async def analyze(
 
     try:
         scene_id, scene_graph = analyze_image_full(
-            image, text_prompts=text_prompts, fov_override=fov_override,
+            image, detect=detect_objects, fov_override=fov_override,
         )
     except Exception as exc:
         logger.exception("Analysis failed.")
@@ -551,7 +526,6 @@ async def analyze(
     return AnalyzeResponse(
         scene_id=scene_id,
         scene_graph=scene_graph,
-        debug_url=f"/debug/{scene_id}",
         intrinsics_source=scene_graph.calibration.intrinsics_source,
     )
 
@@ -596,69 +570,107 @@ async def ask(request: AskRequest):
     return AskResponse(answer=answer, scene_id=scene_id)
 
 
-@app.get("/debug/{scene_id}")
-async def debug_list(scene_id: str):
-    """List available debug artifacts for a scene."""
+def _get_debug(scene_id: str) -> DebugArtifacts:
+    """Look up debug artifacts for a scene, raising 404 if not found."""
     if scene_id not in _scene_cache:
         raise HTTPException(
             status_code=404,
             detail=f"Scene '{scene_id}' not found.",
         )
-
     _, _, debug = _scene_cache[scene_id]
-    artifacts = debug.available_artifacts()
-    return {"scene_id": scene_id, "artifacts": artifacts}
+    return debug
 
 
-@app.get("/debug/{scene_id}/{artifact_name}")
-async def debug_artifact(scene_id: str, artifact_name: str):
-    """Retrieve a specific debug artifact for a scene.
-
-    Returns the artifact with the appropriate Content-Type:
-    - detections, masks, depth, annotated → image/jpeg
-    - raw_tags, filtered_tags, detections_json, scene_graph → application/json
-    - scene_graph_text → text/plain
-    - pointcloud → text/html
-    """
-    if scene_id not in _scene_cache:
+def _require_jpg(data: bytes | None, scene_id: str, name: str) -> Response:
+    """Return a JPEG Response or raise 404 if the artifact is unavailable."""
+    if data is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Scene '{scene_id}' not found.",
+            detail=f"'{name}' not available for scene '{scene_id}'.",
         )
+    return Response(content=data, media_type="image/jpeg")
 
-    _, _, debug = _scene_cache[scene_id]
-    artifact_map = debug._artifact_map()
 
-    if artifact_name not in artifact_map:
+@app.get("/scene/{scene_id}/detections")
+async def scene_detections(scene_id: str):
+    """Detection boxes drawn on the image (JPEG)."""
+    debug = _get_debug(scene_id)
+    return _require_jpg(debug.detections_jpg, scene_id, "detections")
+
+
+@app.get("/scene/{scene_id}/masks")
+async def scene_masks(scene_id: str):
+    """Segmentation mask overlay (JPEG)."""
+    debug = _get_debug(scene_id)
+    return _require_jpg(debug.masks_jpg, scene_id, "masks")
+
+
+@app.get("/scene/{scene_id}/depth")
+async def scene_depth(scene_id: str):
+    """Depth heatmap with meter labels (JPEG)."""
+    debug = _get_debug(scene_id)
+    return _require_jpg(debug.depth_jpg, scene_id, "depth")
+
+
+@app.get("/scene/{scene_id}/annotated")
+async def scene_annotated(scene_id: str):
+    """Full annotation: boxes, masks, 3D dimensions, distances (JPEG)."""
+    debug = _get_debug(scene_id)
+    return _require_jpg(debug.annotated_jpg, scene_id, "annotated")
+
+
+@app.get("/scene/{scene_id}/pointcloud")
+async def scene_pointcloud(scene_id: str):
+    """Interactive 3D point cloud (HTML — open in browser)."""
+    debug = _get_debug(scene_id)
+    if debug.pointcloud_html is None:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"Artifact '{artifact_name}' not found. "
-                f"Available: {debug.available_artifacts()}"
-            ),
+            detail=f"'pointcloud' not available for scene '{scene_id}'.",
         )
+    return HTMLResponse(content=debug.pointcloud_html)
 
-    value = artifact_map[artifact_name]
-    if value is None:
+
+@app.get("/scene/{scene_id}/tags")
+async def scene_tags(scene_id: str):
+    """Raw and filtered tags used for detection (JSON)."""
+    debug = _get_debug(scene_id)
+    return JSONResponse(content={
+        "raw_tags": debug.raw_tags,
+        "filtered_tags": debug.filtered_tags,
+        "anchors_injected": debug.anchors_injected,
+    })
+
+
+@app.get("/scene/{scene_id}/objects")
+async def scene_objects(scene_id: str):
+    """Post-NMS detection data: label, confidence, bbox (JSON)."""
+    debug = _get_debug(scene_id)
+    return JSONResponse(content=debug.post_nms_detections or [])
+
+
+@app.get("/scene/{scene_id}/graph")
+async def scene_graph_json(scene_id: str):
+    """Full scene graph as JSON."""
+    debug = _get_debug(scene_id)
+    if debug.scene_graph_json is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Artifact '{artifact_name}' is not available for this scene.",
+            detail=f"'graph' not available for scene '{scene_id}'.",
         )
+    return JSONResponse(content=debug.scene_graph_json)
 
-    # Image artifacts (JPEG bytes)
-    if artifact_name in ("detections", "masks", "depth", "annotated"):
-        return Response(content=value, media_type="image/jpeg")
 
-    # HTML artifact
-    if artifact_name == "pointcloud":
-        return HTMLResponse(content=value)
-
-    # Plain text
-    if artifact_name == "scene_graph_text":
-        return PlainTextResponse(content=value)
-
-    # JSON artifacts
-    return JSONResponse(content=value)
+@app.get("/scene/{scene_id}/graph/text")
+async def scene_graph_text(scene_id: str):
+    """Human-readable scene graph table (plain text)."""
+    debug = _get_debug(scene_id)
+    if debug.scene_graph_text is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"'graph/text' not available for scene '{scene_id}'.",
+        )
+    return PlainTextResponse(content=debug.scene_graph_text)
 
 
 @app.get("/health")
@@ -679,10 +691,10 @@ def main() -> None:
     )
     parser.add_argument("--image", type=str, help="Path to input image")
     parser.add_argument(
-        "--prompts",
+        "--detect",
         type=str,
         nargs="*",
-        help="Additional object categories to detect",
+        help="Additional object categories to detect (merged with auto-discovered tags)",
     )
     parser.add_argument(
         "--interactive",
@@ -732,7 +744,7 @@ def main() -> None:
 
     use_tagger = not args.no_tagger
     scene_id, scene_graph = analyze_image_full(
-        image, text_prompts=args.prompts, use_tagger=use_tagger, fov_override=args.fov,
+        image, detect=args.detect, use_tagger=use_tagger, fov_override=args.fov,
     )
 
     # Print results

@@ -28,8 +28,8 @@ python main.py --image path/to/photo.jpg
 # Interactive Q&A after analysis
 python main.py --image path/to/photo.jpg --interactive
 
-# Custom detection prompts
-python main.py --image photo.jpg --prompts "chair . table . lamp"
+# Additional objects to detect (merged with auto-discovered tags)
+python main.py --image photo.jpg --detect "chair" "table" "lamp"
 ```
 
 ## Environment Variables

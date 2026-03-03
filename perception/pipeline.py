@@ -127,7 +127,7 @@ class PerceptionPipeline:
     def run(
         self,
         image: PIL.Image.Image | str,
-        text_prompts: list[str] | None = None,
+        extra_objects: list[str] | None = None,
     ) -> PerceptionResult:
         """Execute the full pipeline: detect -> segment -> depth.
 
@@ -135,8 +135,11 @@ class PerceptionPipeline:
         ----------
         image:
             An RGB PIL image **or** a path to an image file.
-        text_prompts:
-            Optional category names to guide detection.
+        extra_objects:
+            Optional object categories to detect.  When the tagger is enabled,
+            these are **merged** into the auto-discovered tags so that both
+            automatic and user-specified objects are detected.  When the tagger
+            is disabled, these are used as the sole detection targets.
 
         Returns
         -------
@@ -155,17 +158,20 @@ class PerceptionPipeline:
         _anchors_injected = None
         _pre_nms_detections = None
 
-        if text_prompts is not None:
-            # User provided explicit prompts — use original all-at-once DINO
-            logger.info("Using explicit prompts: %s", text_prompts)
-            detections = self.detector.detect(image, text_prompts=text_prompts)
-        elif self.use_tagger:
+        if self.use_tagger:
             # RAM++ → Claude filter → per-tag DINO pipeline
             logger.info("Running RAM++ tagging …")
             _raw_tags = self.tagger.tag(image)
 
             logger.info("Running Claude tag filter …")
             _filtered_tags = self.tag_filter.filter_tags(_raw_tags)
+
+            # Merge user-specified objects into filtered tags
+            if extra_objects:
+                for obj in extra_objects:
+                    if obj not in _filtered_tags:
+                        _filtered_tags.append(obj)
+                logger.info("Merged user-specified objects: %s", extra_objects)
 
             # Guarantee spatial anchors are always sent to DINO
             _anchors_injected = []
@@ -184,6 +190,10 @@ class PerceptionPipeline:
                 detections, _pre_nms_detections = self.detector.detect_per_tag(
                     image, _filtered_tags, return_pre_nms=True,
                 )
+        elif extra_objects:
+            # No tagger — use user-specified objects as detection targets
+            logger.info("Using user-specified objects: %s", extra_objects)
+            detections = self.detector.detect(image, text_prompts=extra_objects)
         else:
             detections = self.detector.detect(image, text_prompts=None)
 
