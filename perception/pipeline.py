@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +36,7 @@ class PerceptionResult:
     filtered_tags: list[str] | None = None
     anchors_injected: list[str] | None = None
     pre_nms_detections: list[Detection] | None = None
+    depth_source: str = "depth_anything"  # "depth_anything" or "iphone_lidar"
 
     @property
     def num_objects(self) -> int:
@@ -85,9 +86,11 @@ class PerceptionPipeline:
         self.depth_estimator = DepthEstimator(device=device)
         self.use_tagger = use_tagger
         self._device = device
+        self._confidence_threshold = confidence_threshold
         self._tagger = None
         self._tag_filter = None
         self._gemini_tagger = None
+        self._sam3_detector = None
 
     @property
     def tagger(self):
@@ -116,6 +119,18 @@ class PerceptionPipeline:
             self._gemini_tagger = GeminiTagger()
         return self._gemini_tagger
 
+    @property
+    def sam3_detector(self):
+        """Lazy-load the SAM3 detector+segmentor."""
+        if self._sam3_detector is None:
+            from perception.sam3_detector import Sam3Detector
+
+            self._sam3_detector = Sam3Detector(
+                device=self._device,
+                confidence_threshold=self._confidence_threshold,
+            )
+        return self._sam3_detector
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -139,6 +154,8 @@ class PerceptionPipeline:
         image: PIL.Image.Image | str,
         extra_objects: list[str] | None = None,
         use_gemini_tagger: bool = False,
+        use_sam3: bool = False,
+        image_path: str | None = None,
     ) -> PerceptionResult:
         """Execute the full pipeline: detect -> segment -> depth.
 
@@ -154,16 +171,26 @@ class PerceptionPipeline:
         use_gemini_tagger:
             When True, use Gemini 2.5 Flash for image tagging instead of
             RAM++ + Claude filter.  Tags are already filtered by Gemini.
+        use_sam3:
+            When True, use SAM3 for unified detection + segmentation instead
+            of DINO + SAM2.  Requires ``use_gemini_tagger`` for tag discovery.
+        image_path:
+            Original file path — used to extract iPhone LiDAR depth from HEIC
+            when available.  Falls back to Depth Anything if no LiDAR data.
 
         Returns
         -------
         PerceptionResult
             Detections, masks, metric depth map, and image size.
         """
+        # Resolve image_path from string input
+        if image_path is None and isinstance(image, (str, Path)):
+            image_path = str(image)
+
         image = self._load_image(image)
         image_size = image.size  # (width, height)
 
-        # --- 1. Detection --------------------------------------------------
+        # --- 1. Detection (+Segmentation for SAM3) -------------------------
         logger.info("Running object detection …")
 
         # Debug data (populated when tagger pipeline runs)
@@ -171,9 +198,10 @@ class PerceptionPipeline:
         _filtered_tags = None
         _anchors_injected = None
         _pre_nms_detections = None
+        masks = None  # SAM3 produces masks during detection
 
         if use_gemini_tagger:
-            # Gemini tagger → per-tag DINO pipeline (no Claude filter needed)
+            # Gemini tagger discovers tags
             # No spatial anchor injection — Gemini sees the actual image and
             # already includes structural elements (wall, floor, ceiling, etc.)
             # in its tags when they are visible.  Blind injection causes DINO
@@ -192,7 +220,15 @@ class PerceptionPipeline:
             if not _filtered_tags:
                 logger.warning("Gemini tagger returned empty list — falling back to defaults.")
                 detections = self.detector.detect(image, text_prompts=None)
+            elif use_sam3:
+                # SAM3: unified detection + segmentation in one model
+                logger.info("Running SAM3 for %d tags …", len(_filtered_tags))
+                result_tuple = self.sam3_detector.detect_and_segment(
+                    image, _filtered_tags, return_pre_nms=True,
+                )
+                detections, masks, _pre_nms_detections = result_tuple
             else:
+                # DINO per-tag detection (original path)
                 logger.info("Running per-tag detection for %d tags …", len(_filtered_tags))
                 detections, _pre_nms_detections = self.detector.detect_per_tag(
                     image, _filtered_tags, return_pre_nms=True,
@@ -239,8 +275,7 @@ class PerceptionPipeline:
 
         if not detections:
             logger.warning("No objects detected — returning empty perception result.")
-            # Still compute depth since downstream modules may need it
-            depth_map = self.depth_estimator.estimate(image)
+            depth_map = self._get_depth(image, image_path)
             return PerceptionResult(
                 detections=[],
                 masks=[],
@@ -248,13 +283,13 @@ class PerceptionPipeline:
                 image_size=image_size,
             )
 
-        # --- 2. Segmentation -----------------------------------------------
-        logger.info("Running segmentation for %d detections …", len(detections))
-        masks = self.segmentor.segment(image, detections)
+        # --- 2. Segmentation (skip if SAM3 already produced masks) ---------
+        if masks is None:
+            logger.info("Running segmentation for %d detections …", len(detections))
+            masks = self.segmentor.segment(image, detections)
 
         # --- 3. Depth -------------------------------------------------------
-        logger.info("Running depth estimation …")
-        depth_map = self.depth_estimator.estimate(image)
+        depth_map, depth_source = self._get_depth_with_source(image, image_path)
 
         result = PerceptionResult(
             detections=detections,
@@ -265,11 +300,44 @@ class PerceptionPipeline:
             filtered_tags=_filtered_tags,
             anchors_injected=_anchors_injected,
             pre_nms_detections=_pre_nms_detections,
+            depth_source=depth_source,
         )
         logger.info(
-            "Perception complete: %d objects, depth shape %s, image %s",
+            "Perception complete: %d objects, depth shape %s, image %s, depth_source=%s",
             result.num_objects,
             depth_map.shape,
             image_size,
+            depth_source,
         )
         return result
+
+    # ------------------------------------------------------------------
+    # Depth helpers
+    # ------------------------------------------------------------------
+
+    def _get_depth_with_source(
+        self, image: PIL.Image.Image, image_path: str | None,
+    ) -> tuple[np.ndarray, str]:
+        """Try iPhone LiDAR depth first, fall back to Depth Anything.
+
+        Returns (depth_map, source_name).
+        """
+        w, h = image.size
+
+        if image_path is not None:
+            from perception.iphone_depth import extract_iphone_depth, resize_iphone_depth
+
+            iphone_depth = extract_iphone_depth(image_path)
+            if iphone_depth is not None:
+                logger.info("Using iPhone LiDAR depth (ground truth).")
+                return resize_iphone_depth(iphone_depth, w, h), "iphone_lidar"
+
+        logger.info("Running Depth Anything estimation …")
+        return self.depth_estimator.estimate(image), "depth_anything"
+
+    def _get_depth(
+        self, image: PIL.Image.Image, image_path: str | None,
+    ) -> np.ndarray:
+        """Get depth map (convenience wrapper)."""
+        depth_map, _ = self._get_depth_with_source(image, image_path)
+        return depth_map

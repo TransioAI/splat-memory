@@ -234,6 +234,8 @@ def analyze_image_full(
     use_tagger: bool = True,
     fov_override: float | None = None,
     use_gemini_tagger: bool = False,
+    use_sam3: bool = False,
+    image_path: str | None = None,
 ) -> tuple[str, SceneGraph]:
     """Run the full perception + fusion pipeline and build a SceneGraph.
 
@@ -263,6 +265,12 @@ def analyze_image_full(
     use_gemini_tagger:
         When True, use Gemini 2.5 Flash for tagging instead of RAM++ +
         Claude filter.  Overrides use_tagger.
+    use_sam3:
+        When True, use SAM3 for unified detection + segmentation instead
+        of DINO + SAM2.  Best used with ``use_gemini_tagger=True``.
+    image_path:
+        Original file path — used to extract iPhone LiDAR depth from HEIC
+        when available.
 
     Returns
     -------
@@ -309,7 +317,13 @@ def analyze_image_full(
 
     # 2. Perception: detect -> segment -> depth
     logger.info("Running perception pipeline on %dx%d image...", width, height)
-    result = pipeline.run(image, extra_objects=detect, use_gemini_tagger=use_gemini_tagger)
+    result = pipeline.run(
+        image,
+        extra_objects=detect,
+        use_gemini_tagger=use_gemini_tagger,
+        use_sam3=use_sam3,
+        image_path=image_path,
+    )
     detections = result.detections
     masks = result.masks
     depth_map = result.depth_map
@@ -480,6 +494,7 @@ async def analyze(
     fov_degrees: float | None = Form(None),
     focal_length_35mm: float | None = Form(None),
     use_gemini_tagger: bool = Form(False),
+    use_sam3: bool = Form(False),
 ):
     """Upload an image and get back a scene graph with 3D spatial info.
 
@@ -498,7 +513,12 @@ async def analyze(
     use_gemini_tagger:
         When True, use Gemini 2.5 Flash for tagging instead of RAM++ +
         Claude filter.
+    use_sam3:
+        When True, use SAM3 for unified detection + segmentation instead
+        of DINO + SAM2.
     """
+    import tempfile
+
     # Validate content type (allow HEIC which may report as application/octet-stream)
     if file.content_type and not (
         file.content_type.startswith("image/")
@@ -523,14 +543,29 @@ async def analyze(
 
         fov_override = focal_length_35mm_to_fov(focal_length_35mm)
 
+    # Save uploaded file temporarily for iPhone LiDAR depth extraction
+    # (pillow_heif needs a file path to extract auxiliary images)
+    temp_path = None
+    filename = file.filename or ""
+    if filename.lower().endswith((".heic", ".heif")):
+        suffix = Path(filename).suffix
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(contents)
+            temp_path = tmp.name
+
     try:
         scene_id, scene_graph = analyze_image_full(
             image, detect=detect_objects, fov_override=fov_override,
             use_gemini_tagger=use_gemini_tagger,
+            use_sam3=use_sam3,
+            image_path=temp_path,
         )
     except Exception as exc:
         logger.exception("Analysis failed.")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+    finally:
+        if temp_path is not None:
+            Path(temp_path).unlink(missing_ok=True)
 
     return AnalyzeResponse(
         scene_id=scene_id,
@@ -761,6 +796,11 @@ def main() -> None:
         help="Use Gemini 2.5 Flash for tagging instead of RAM++ + Claude filter",
     )
     parser.add_argument(
+        "--sam3",
+        action="store_true",
+        help="Use SAM3 for unified detection + segmentation (replaces DINO + SAM2)",
+    )
+    parser.add_argument(
         "--fov",
         type=float,
         default=None,
@@ -792,6 +832,8 @@ def main() -> None:
     scene_id, scene_graph = analyze_image_full(
         image, detect=args.detect, use_tagger=use_tagger, fov_override=args.fov,
         use_gemini_tagger=args.gemini_tags,
+        use_sam3=args.sam3,
+        image_path=str(image_path),
     )
 
     # Print results

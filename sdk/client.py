@@ -301,6 +301,7 @@ class SplatMemory:
         fov_degrees: float | None = None,
         focal_length_35mm: float | None = None,
         use_gemini_tagger: bool = False,
+        use_sam3: bool = False,
     ) -> Scene:
         """Upload an image with additional options.
 
@@ -318,6 +319,9 @@ class SplatMemory:
         use_gemini_tagger:
             When True, use Gemini 2.5 Flash for tagging instead of
             RAM++ + Claude filter.
+        use_sam3:
+            When True, use SAM3 for unified detection + segmentation
+            instead of DINO + SAM2.
         """
         filepath = Path(image_path)
         if not filepath.is_file():
@@ -344,6 +348,8 @@ class SplatMemory:
             form_fields["focal_length_35mm"] = str(focal_length_35mm)
         if use_gemini_tagger:
             form_fields["use_gemini_tagger"] = "true"
+        if use_sam3:
+            form_fields["use_sam3"] = "true"
 
         field_parts = ""
         for name, value in form_fields.items():
