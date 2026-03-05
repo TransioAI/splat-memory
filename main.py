@@ -967,6 +967,19 @@ def main() -> None:
         if cal.scale_warning:
             print(f"WARNING: {cal.scale_warning}")
 
+        # Save debug visualizations to disk
+        cached = _scene_cache.get(scene_id)
+        debug = cached[2] if cached else None
+        if debug:
+            out_dir = Path("video_debug_output")
+            out_dir.mkdir(exist_ok=True)
+            if debug.pointcloud_html:
+                (out_dir / "pointcloud.html").write_text(debug.pointcloud_html)
+                print(f"Saved: {out_dir / 'pointcloud.html'}")
+            if debug.floorplan_html:
+                (out_dir / "floorplan.html").write_text(debug.floorplan_html)
+                print(f"Saved: {out_dir / 'floorplan.html'}")
+
     elif args.image:
         # --- CLI: analyze a single image ---
         image_path = Path(args.image)

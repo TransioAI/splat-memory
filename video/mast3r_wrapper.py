@@ -8,8 +8,11 @@ MASt3R must be installed via git clone (not pip):
 from __future__ import annotations
 
 import logging
+import sys
 import tempfile
 from dataclasses import dataclass
+from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import torch
@@ -35,14 +38,41 @@ class MASt3RReconstructor:
 
     MODEL_ID = "naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric"
 
+    # Common install locations for MASt3R (git-cloned, not pip-installed)
+    _MAST3R_SEARCH_PATHS: ClassVar[list[Path]] = [
+        Path.home() / "mast3r",
+        Path("/opt/mast3r"),
+    ]
+
     def __init__(self, device: str = "cuda") -> None:
         self.device = device if torch.cuda.is_available() else "cpu"
         self._model = None
+
+    @staticmethod
+    def _add_mast3r_to_path() -> None:
+        """Add MASt3R and its submodules to sys.path if not already importable."""
+        try:
+            import mast3r  # noqa: F401
+            return  # already on path
+        except ImportError:
+            pass
+
+        for candidate in MASt3RReconstructor._MAST3R_SEARCH_PATHS:
+            mast3r_init = candidate / "mast3r" / "__init__.py"
+            if mast3r_init.exists():
+                for sub in [candidate, candidate / "dust3r", candidate / "dust3r" / "croco"]:
+                    s = str(sub)
+                    if s not in sys.path:
+                        sys.path.insert(0, s)
+                logger.info("Added MASt3R to sys.path from %s", candidate)
+                return
 
     def _ensure_model(self) -> None:
         """Lazy-load the MASt3R model."""
         if self._model is not None:
             return
+
+        self._add_mast3r_to_path()
 
         try:
             from mast3r.model import AsymmetricMASt3R
@@ -145,14 +175,33 @@ class MASt3RReconstructor:
         # 4. Extract results
         pts3d_tensors, _, confs_tensors = scene.get_dense_pts3d(clean_depth=True)
 
-        pts3d = [
+        # Get MASt3R internal resolution from loaded images
+        # imgs[i]['true_shape'] is (H, W) at model resolution
+        mast3r_shapes = [
+            tuple(int(x) for x in img['true_shape'].flatten()[:2])
+            for img in imgs
+        ]
+
+        pts3d_raw = [
             p.detach().cpu().numpy() if torch.is_tensor(p) else np.asarray(p)
             for p in pts3d_tensors
         ]
-        confs = [
+        confs_raw = [
             c.detach().cpu().numpy() if torch.is_tensor(c) else np.asarray(c)
             for c in confs_tensors
         ]
+
+        # Reshape flat (N, 3) → (H, W, 3) and (N,) → (H, W)
+        pts3d = []
+        confs = []
+        for i, (p, c) in enumerate(zip(pts3d_raw, confs_raw, strict=True)):
+            h, w = mast3r_shapes[i]
+            if p.ndim == 2 and p.shape[0] == h * w:
+                p = p.reshape(h, w, 3)
+            if c.ndim == 1 and c.shape[0] == h * w:
+                c = c.reshape(h, w)
+            pts3d.append(p)
+            confs.append(c)
 
         # Camera poses: cam2world matrices
         im_poses = scene.get_im_poses()
@@ -170,7 +219,7 @@ class MASt3RReconstructor:
         principal_points = [(float(pp[0]), float(pp[1])) for pp in pp_tensor]
 
         # Descriptors
-        descriptors = self._extract_descriptors(scene, len(image_paths))
+        descriptors = self._extract_descriptors(scene, len(image_paths), mast3r_shapes)
 
         logger.info(
             "MASt3R reconstruction complete: %d frames, pointmap shapes: %s",
@@ -203,6 +252,7 @@ class MASt3RReconstructor:
         self,
         scene,
         num_frames: int,
+        mast3r_shapes: list[tuple[int, int]],
     ) -> list[np.ndarray]:
         """Extract per-frame feature descriptors from MASt3R scene.
 
@@ -213,6 +263,7 @@ class MASt3RReconstructor:
         try:
             descs = []
             for i in range(num_frames):
+                h, w = mast3r_shapes[i]
                 desc = None
                 # Try accessing descriptors from various internal attributes
                 for attr in ("_desc", "desc", "stacked_descriptors"):
@@ -224,13 +275,13 @@ class MASt3RReconstructor:
                 if desc is not None:
                     if torch.is_tensor(desc):
                         desc = desc.detach().cpu().numpy()
-                    descs.append(np.asarray(desc))
+                    d = np.asarray(desc)
+                    # Reshape flat (N, D) → (H, W, D)
+                    if d.ndim == 2 and d.shape[0] == h * w:
+                        d = d.reshape(h, w, d.shape[1])
+                    descs.append(d)
                 else:
                     # Fallback: zero descriptors (spatial+label merging still works)
-                    h, w = 384, 512
-                    if hasattr(scene, "imgs") and len(scene.imgs) > i:
-                        shape = scene.imgs[i].shape
-                        h, w = shape[0] if len(shape) > 0 else h, shape[1] if len(shape) > 1 else w
                     descs.append(np.zeros((h, w, 24), dtype=np.float32))
 
             return descs
