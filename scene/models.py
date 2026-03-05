@@ -135,8 +135,9 @@ class SceneGraph(BaseModel):
             lines.append(row)
         lines.append("")
 
-        # Relations
-        if self.relations:
+        # Relations — skip for large scenes to avoid token explosion
+        # The LLM can compute distances from object positions directly
+        if self.relations and len(self.relations) <= 500:
             lines.append("--- SPATIAL RELATIONS ---")
             for rel in self.relations:
                 dist_str = (
@@ -150,6 +151,9 @@ class SceneGraph(BaseModel):
                     f"{rel.object_label} (id={rel.object_id})"
                     f"{dist_str}"
                 )
+            lines.append("")
+        elif self.relations:
+            lines.append(f"--- {len(self.relations)} SPATIAL RELATIONS (omitted, use object positions to compute distances) ---")
             lines.append("")
 
         lines.append("=== END SCENE GRAPH ===")

@@ -87,6 +87,41 @@ class DebugArtifacts:
 # In-memory scene cache: scene_id -> (SceneGraph, SpatialReasoner, DebugArtifacts)
 _scene_cache: dict[str, tuple[SceneGraph, SpatialReasoner, DebugArtifacts]] = {}
 
+_CACHE_DIR = Path(__file__).parent / ".scene_cache"
+
+def _save_scene_to_disk(scene_id: str, scene_graph: SceneGraph, debug: DebugArtifacts) -> None:
+    import pickle
+    _CACHE_DIR.mkdir(exist_ok=True)
+    path = _CACHE_DIR / f"{scene_id}.pkl"
+    try:
+        with open(path, "wb") as f:
+            pickle.dump({"scene_graph": scene_graph, "debug": debug}, f)
+        logger.info("Saved scene %s to disk.", scene_id)
+    except Exception as exc:
+        logger.warning("Failed to save scene %s: %s", scene_id, exc)
+
+def _load_scenes_from_disk() -> None:
+    import pickle
+    if not _CACHE_DIR.is_dir():
+        return
+    for path in sorted(_CACHE_DIR.glob("*.pkl")):
+        scene_id = path.stem
+        if scene_id in _scene_cache:
+            continue
+        try:
+            with open(path, "rb") as f:
+                data = pickle.load(f)
+            sg = data["scene_graph"]
+            debug = data["debug"]
+            reasoner = SpatialReasoner()
+            reasoner.set_scene(sg)
+            _scene_cache[scene_id] = (sg, reasoner, debug)
+            logger.info("Restored scene %s from disk (%d objects).", scene_id, len(sg.objects))
+        except Exception as exc:
+            logger.warning("Failed to load scene %s: %s", scene_id, exc)
+
+_load_scenes_from_disk()
+
 # ---------------------------------------------------------------------------
 # Request / Response models
 # ---------------------------------------------------------------------------
@@ -487,6 +522,7 @@ def analyze_image_full(
     reasoner = SpatialReasoner()
     reasoner.set_scene(scene_graph)
     _scene_cache[scene_id] = (scene_graph, reasoner, debug)
+    _save_scene_to_disk(scene_id, scene_graph, debug)
 
     logger.info(
         "Scene %s built: %d objects, %d relations, scale=%.3f, fov=%.1f° (%s)",
@@ -577,6 +613,7 @@ def analyze_video_full(
     reasoner = SpatialReasoner()
     reasoner.set_scene(scene_graph)
     _scene_cache[scene_id] = (scene_graph, reasoner, debug)
+    _save_scene_to_disk(scene_id, scene_graph, debug)
 
     logger.info(
         "Video scene %s built: %d objects, %d relations, %d frames, scale=%.3f",

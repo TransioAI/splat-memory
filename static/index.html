@@ -205,15 +205,20 @@ async function restoreLastScene() {
     if (d.scenes && d.scenes.length > 0) {
       const last = d.scenes[d.scenes.length - 1];
       sceneId = last.id;
-      const gr = await fetch("/scene/" + sceneId + "/graph");
-      if (gr.ok) {
-        const sg = await gr.json();
-        showResults({scene_id: sceneId, scene_graph: sg});
-      } else {
-        document.getElementById('results').style.display = 'block';
-        document.getElementById('chatSection').style.display = 'block';
-        showViz('annotated');
-      }
+      try {
+        const gr = await fetch("/scene/" + sceneId + "/graph");
+        if (gr.ok) {
+          const sg = await gr.json();
+          showResults({scene_id: sceneId, scene_graph: sg});
+          showError(null);
+          return;
+        }
+      } catch(e2) { console.log("Graph fetch failed, falling back:", e2); }
+      // Fallback: just show viz tabs and chat without object table
+      document.getElementById('results').style.display = 'block';
+      document.getElementById('chatSection').style.display = 'block';
+      showViz('annotated');
+      showError(null);
     }
   } catch(e) { console.log("Could not restore scene:", e); }
 }
