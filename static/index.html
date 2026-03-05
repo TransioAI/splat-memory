@@ -191,11 +191,33 @@ async function checkHealth() {
     const r = await fetch('/health');
     const d = await r.json();
     document.getElementById('healthDot').classList.add('ok');
-    document.getElementById('healthText').textContent = `Connected (${d.scenes_cached} scenes)`;
+    document.getElementById('healthText').textContent = "Connected (" + d.scenes_cached + " scenes)";
+    if (!sceneId && d.scenes_cached > 0) { restoreLastScene(); }
   } catch(e) {
     document.getElementById('healthText').textContent = 'Server offline';
   }
 }
+
+async function restoreLastScene() {
+  try {
+    const r = await fetch('/scenes');
+    const d = await r.json();
+    if (d.scenes && d.scenes.length > 0) {
+      const last = d.scenes[d.scenes.length - 1];
+      sceneId = last.id;
+      const gr = await fetch("/scene/" + sceneId + "/graph");
+      if (gr.ok) {
+        const sg = await gr.json();
+        showResults({scene_id: sceneId, scene_graph: sg});
+      } else {
+        document.getElementById('results').style.display = 'block';
+        document.getElementById('chatSection').style.display = 'block';
+        showViz('annotated');
+      }
+    }
+  } catch(e) { console.log("Could not restore scene:", e); }
+}
+
 checkHealth();
 
 // Mode switch
@@ -361,19 +383,35 @@ function askSubmit() {
 }
 
 async function askQuestion(question) {
-  const msgs = document.getElementById('messages');
+  const msgs = document.getElementById("messages");
   msgs.innerHTML += `<div class="msg user"><div class="bubble">${esc(question)}</div></div>`;
   msgs.innerHTML += `<div class="msg assistant typing" id="typing"><div class="bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>`;
   msgs.scrollTop = msgs.scrollHeight;
 
-  try {
-    const r = await fetch('/ask', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({scene_id: sceneId, question}) });
-    const d = await r.json();
-    document.getElementById('typing')?.remove();
-    msgs.innerHTML += `<div class="msg assistant"><div class="bubble">${esc(d.answer)}</div></div>`;
-  } catch(e) {
-    document.getElementById('typing')?.remove();
-    msgs.innerHTML += `<div class="msg assistant"><div class="bubble" style="color:var(--red)">Error: ${esc(e.message)}</div></div>`;
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const r = await fetch("/ask", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({scene_id: sceneId, question}) });
+      const d = await r.json();
+      if (!r.ok) {
+        const errMsg = d.detail || d.error || "Server error";
+        if (r.status === 500 && attempt < maxRetries - 1) {
+          const wait = (attempt + 1) * 15;
+          document.getElementById("typing").querySelector(".bubble").textContent = "Rate limited, retrying in " + wait + "s...";
+          await new Promise(res => setTimeout(res, wait * 1000));
+          continue;
+        }
+        throw new Error(errMsg);
+      }
+      document.getElementById("typing")?.remove();
+      msgs.innerHTML += `<div class="msg assistant"><div class="bubble">${esc(d.answer)}</div></div>`;
+      break;
+    } catch(e) {
+      if (attempt === maxRetries - 1) {
+        document.getElementById("typing")?.remove();
+        msgs.innerHTML += `<div class="msg assistant"><div class="bubble" style="color:#f85149">Error: ${esc(e.message)}</div></div>`;
+      }
+    }
   }
   msgs.scrollTop = msgs.scrollHeight;
 }

@@ -909,6 +909,19 @@ async def health():
     return {"status": "ok", "scenes_cached": len(_scene_cache)}
 
 
+@app.get("/scenes")
+async def list_scenes():
+    """List cached scene IDs with basic info."""
+    scenes = []
+    for sid, (sg, _, dbg) in _scene_cache.items():
+        scenes.append({
+            "id": sid,
+            "num_objects": len(sg.objects) if sg else 0,
+            "source": getattr(dbg, "source", None) if dbg else None,
+        })
+    return {"scenes": scenes}
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
