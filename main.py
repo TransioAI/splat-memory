@@ -1,6 +1,8 @@
 """FastAPI server and CLI entry point for splat-memory."""
 
 from __future__ import annotations
+from dotenv import load_dotenv
+load_dotenv()
 
 import argparse
 import io
@@ -474,6 +476,7 @@ def analyze_video_full(
     source: str | Path,
     detect: list[str] | None = None,
     use_gemini_tagger: bool = False,
+    use_sam3: bool = False,
     every_n_frames: int = 30,
     max_frames: int = 40,
 ) -> tuple[str, SceneGraph]:
@@ -504,6 +507,7 @@ def analyze_video_full(
         source=source,
         detect=detect,
         use_gemini_tagger=use_gemini_tagger,
+        use_sam3=use_sam3,
         every_n_frames=every_n_frames,
         max_frames=max_frames,
     )
@@ -911,6 +915,11 @@ def main() -> None:
         help="Use Gemini 2.5 Flash for tagging instead of RAM++ + Claude filter",
     )
     parser.add_argument(
+        "--sam3",
+        action="store_true",
+        help="Use SAM3 for detection+segmentation instead of Grounding DINO + SAM2",
+    )
+    parser.add_argument(
         "--fov",
         type=float,
         default=None,
@@ -950,6 +959,7 @@ def main() -> None:
             source=str(source_path),
             detect=args.detect,
             use_gemini_tagger=args.gemini_tags,
+            use_sam3=args.sam3,
             every_n_frames=args.every_n_frames,
             max_frames=args.max_frames,
         )

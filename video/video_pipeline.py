@@ -74,11 +74,19 @@ class VideoPipeline:
             )
         return self._perception_pipeline
 
+    @property
+    def sam3(self):
+        if not hasattr(self, "_sam3") or self._sam3 is None:
+            from perception.sam3_detector import Sam3Detector
+            self._sam3 = Sam3Detector(device=self._device)
+        return self._sam3
+
     def run(
         self,
         source: str | Path,
         detect: list[str] | None = None,
         use_gemini_tagger: bool = False,
+        use_sam3: bool = False,
         every_n_frames: int = 30,
         max_frames: int = 40,
         scene_graph: str = "swin-3",
@@ -94,6 +102,8 @@ class VideoPipeline:
             Additional object categories to detect.
         use_gemini_tagger:
             Use Gemini 2.5 Flash for tagging instead of RAM++ + Claude.
+        use_sam3:
+            Use SAM3 for unified detection+segmentation instead of Grounding DINO + SAM2.
         every_n_frames:
             Keyframe extraction interval (for video input).
         max_frames:
@@ -164,11 +174,12 @@ class VideoPipeline:
 
             image_rgb = image.convert("RGB")
 
-            # Detect
-            detections = self.perception.detector.detect_per_tag(image_rgb, tags)
-
-            # Segment
-            masks = self.perception.segmentor.segment(image_rgb, detections)
+            # Detect + Segment
+            if use_sam3:
+                detections, masks = self.sam3.detect_and_segment(image_rgb, tags)
+            else:
+                detections = self.perception.detector.detect_per_tag(image_rgb, tags)
+                masks = self.perception.segmentor.segment(image_rgb, detections)
 
             # Get MASt3R maps for this frame
             pointmap = mast3r_result.pts3d[frame_idx]  # (H_m, W_m, 3)
