@@ -50,6 +50,13 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Serve web frontend
+_STATIC_DIR = Path(__file__).parent / "static"
+if _STATIC_DIR.is_dir():
+    @app.get("/", include_in_schema=False)
+    async def root():
+        return HTMLResponse((_STATIC_DIR / "index.html").read_text())
+
 
 # ---------------------------------------------------------------------------
 # Debug artifacts cache
@@ -235,6 +242,7 @@ def analyze_image_full(
     image: Image.Image,
     detect: list[str] | None = None,
     use_tagger: bool = True,
+    use_sam3: bool = False,
     fov_override: float | None = None,
 ) -> tuple[str, SceneGraph]:
     """Run the full perception + fusion pipeline and build a SceneGraph.
@@ -308,10 +316,36 @@ def analyze_image_full(
 
     # 2. Perception: detect -> segment -> depth
     logger.info("Running perception pipeline on %dx%d image...", width, height)
-    result = pipeline.run(image, extra_objects=detect)
-    detections = result.detections
-    masks = result.masks
-    depth_map = result.depth_map
+
+    if use_sam3:
+        # SAM3: unified detection + segmentation
+        from perception.sam3_detector import Sam3Detector
+        from perception.gemini_tagger import GeminiTagger
+
+        tagger = GeminiTagger()
+        tags = tagger.tag(image)
+        if detect:
+            for obj in detect:
+                if obj.lower() not in [t.lower() for t in tags]:
+                    tags.append(obj)
+        logger.info("SAM3 mode: %d tags from Gemini", len(tags))
+
+        sam3 = Sam3Detector(device="cuda")
+        detections, masks = sam3.detect_and_segment(image, tags)
+        depth_map = pipeline.depth_estimator.estimate(image)
+
+        # Populate result for debug artifacts
+        result = type("R", (), {
+            "detections": detections, "masks": masks, "depth_map": depth_map,
+            "image_size": (width, height), "num_objects": len(detections),
+            "raw_tags": None, "filtered_tags": tags,
+            "anchors_injected": None, "pre_nms_detections": None,
+        })()
+    else:
+        result = pipeline.run(image, extra_objects=detect)
+        detections = result.detections
+        masks = result.masks
+        depth_map = result.depth_map
 
     logger.info("Perception complete: %d detections.", len(detections))
 
@@ -567,6 +601,7 @@ async def analyze(
     detect: str | None = Form(None),
     fov_degrees: float | None = Form(None),
     focal_length_35mm: float | None = Form(None),
+    use_sam3: bool = Form(False),
 ):
     """Upload an image and get back a scene graph with 3D spatial info.
 
@@ -609,7 +644,7 @@ async def analyze(
 
     try:
         scene_id, scene_graph = analyze_image_full(
-            image, detect=detect_objects, fov_override=fov_override,
+            image, detect=detect_objects, use_sam3=use_sam3, fov_override=fov_override,
         )
     except Exception as exc:
         logger.exception("Analysis failed.")
@@ -627,6 +662,7 @@ async def analyze_video(
     file: UploadFile = File(...),  # noqa: B008
     detect: str | None = Form(None),
     use_gemini_tagger: bool = Form(False),
+    use_sam3: bool = Form(False),
     every_n_frames: int = Form(30),
     max_frames: int = Form(40),
 ):
@@ -663,6 +699,7 @@ async def analyze_video(
             source=tmp_path,
             detect=detect_objects,
             use_gemini_tagger=use_gemini_tagger,
+            use_sam3=use_sam3,
             every_n_frames=every_n_frames,
             max_frames=max_frames,
         )

@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D Spatial Reasoning Agent</title>
+<style>
+:root {
+  --bg: #0d1117; --bg2: #161b22; --bg3: #21262d; --border: #30363d;
+  --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff; --green: #3fb950;
+  --orange: #d29922; --red: #f85149; --radius: 8px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'SF Mono', Consolas, monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: var(--font); line-height: 1.5; }
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+/* Header */
+header { display: flex; align-items: center; justify-content: space-between; padding: 16px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+header h1 { font-size: 24px; font-weight: 600; }
+header h1 span { color: var(--accent); }
+.health { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text2); }
+.health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+.health-dot.ok { background: var(--green); }
+
+/* Cards */
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 20px; }
+.card h2 { font-size: 16px; margin-bottom: 16px; color: var(--text2); font-weight: 500; }
+
+/* Tabs */
+.tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+.tab { padding: 6px 14px; border-radius: 6px; border: none; background: transparent; color: var(--text2); cursor: pointer; font-size: 13px; font-family: var(--font); }
+.tab:hover { background: var(--bg3); color: var(--text); }
+.tab.active { background: var(--bg3); color: var(--accent); }
+
+/* Upload */
+.drop-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 40px; text-align: center; cursor: pointer; transition: border-color 0.2s; }
+.drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); }
+.drop-zone p { color: var(--text2); margin-top: 8px; }
+.drop-zone .link { color: var(--accent); cursor: pointer; }
+.file-info { margin-top: 12px; font-size: 14px; color: var(--green); font-weight: 600; }
+.drop-zone.has-file { border-color: var(--green); border-style: solid; background: rgba(63,185,80,0.05); }
+.video-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+.video-opts label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text2); }
+.video-opts input[type=number] { width: 70px; background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; }
+.video-opts input[type=checkbox] { accent-color: var(--accent); }
+
+/* Buttons */
+.btn { padding: 10px 24px; border-radius: 6px; border: none; font-size: 14px; font-weight: 500; cursor: pointer; font-family: var(--font); transition: opacity 0.2s; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: #30363d; color: var(--text2); margin-top: 16px; }
+.btn-primary.ready { background: #238636; color: #fff; font-size: 16px; padding: 12px 32px; animation: pulse 2s infinite; }
+.btn-primary.ready:hover { background: #2ea043; }
+@keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(35,134,54,0.4)} 50%{box-shadow:0 0 0 8px rgba(35,134,54,0)} }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+
+/* Loading */
+.loading { margin-top: 16px; display: none; }
+.loading.show { display: block; }
+.progress-bar { height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
+.progress-fill { height: 100%; width: 30%; background: linear-gradient(90deg, var(--orange), var(--accent)); border-radius: 2px; animation: slide 1.5s ease-in-out infinite; }
+@keyframes slide { 0%{transform:translateX(-100%)} 100%{transform:translateX(400%)} }
+.loading-text { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: var(--text2); }
+
+/* Results */
+#results { display: none; }
+.results-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+@media(max-width:900px) { .results-grid { grid-template-columns: 1fr; } }
+.viz-content { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); min-height: 400px; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+.viz-content img { max-width: 100%; max-height: 600px; object-fit: contain; }
+.viz-content iframe { width: 100%; height: 550px; border: none; }
+.viz-content pre { width: 100%; height: 550px; overflow: auto; padding: 16px; font-size: 12px; font-family: var(--mono); color: var(--text2); white-space: pre; }
+.viz-msg { color: var(--text2); font-size: 14px; }
+
+/* Object table */
+.obj-table-wrap { max-height: 500px; overflow-y: auto; }
+.obj-table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: var(--mono); }
+.obj-table th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); color: var(--text2); font-weight: 500; position: sticky; top: 0; background: var(--bg2); }
+.obj-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.obj-table tr:hover td { background: var(--bg3); }
+.conf-bar { display: inline-block; height: 4px; border-radius: 2px; min-width: 4px; }
+.calib-info { font-size: 12px; color: var(--text2); margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.calib-info span { color: var(--text); }
+
+/* Chat */
+#chatSection { display: none; }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.pill { padding: 4px 12px; border-radius: 16px; border: 1px solid var(--border); background: transparent; color: var(--text2); font-size: 12px; cursor: pointer; font-family: var(--font); }
+.pill:hover { border-color: var(--accent); color: var(--accent); }
+.messages { max-height: 350px; overflow-y: auto; margin-bottom: 12px; }
+.msg { margin-bottom: 10px; display: flex; }
+.msg.user { justify-content: flex-end; }
+.bubble { max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+.msg.user .bubble { background: #1f3a5f; color: var(--text); border-bottom-right-radius: 4px; }
+.msg.assistant .bubble { background: var(--bg3); color: var(--text); border-bottom-left-radius: 4px; }
+.typing .dot { display: inline-block; width: 6px; height: 6px; background: var(--text2); border-radius: 50%; margin: 0 2px; animation: blink 1.4s infinite; }
+.typing .dot:nth-child(2) { animation-delay: 0.2s; }
+.typing .dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes blink { 0%,80%,100%{opacity:.3} 40%{opacity:1} }
+.chat-input { display: flex; gap: 8px; }
+.chat-input input { flex: 1; padding: 10px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg3); color: var(--text); font-size: 14px; font-family: var(--font); outline: none; }
+.chat-input input:focus { border-color: var(--accent); }
+.chat-input button { padding: 10px 20px; border-radius: 6px; border: none; background: var(--accent); color: #fff; cursor: pointer; font-size: 14px; font-family: var(--font); }
+
+/* Error */
+.error-banner { background: #3d1214; border: 1px solid var(--red); color: var(--red); padding: 10px 16px; border-radius: var(--radius); margin-bottom: 16px; font-size: 13px; display: none; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1><span>3D</span> Spatial Reasoning Agent</h1>
+    <div class="health"><div class="health-dot" id="healthDot"></div><span id="healthText">Connecting...</span></div>
+  </header>
+
+  <div class="error-banner" id="errorBanner"></div>
+
+  <!-- Upload -->
+  <div class="card">
+    <h2>Analyze</h2>
+    <div class="tabs" id="modeTabs">
+      <button class="tab active" onclick="switchMode('image')">Image</button>
+      <button class="tab" onclick="switchMode('video')">Video</button>
+    </div>
+    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()"
+         ondragover="event.preventDefault();this.classList.add('drag-over')"
+         ondragleave="this.classList.remove('drag-over')" ondrop="handleDrop(event)">
+      <input type="file" id="fileInput" accept="image/*,video/*,.mov,.MOV,.mp4,.avi,.mkv,.heic,.HEIC" onchange="handleFile(event)" style="display:none">
+      <p>Drop a file here or <span class="link">browse</span></p>
+      <p style="font-size:12px;color:var(--text2)">JPEG, PNG, HEIC, MP4, MOV</p>
+      <div class="file-info" id="fileInfo"></div>
+    </div>
+    <div class="video-opts" id="commonOpts">
+      <label><input type="checkbox" id="useSam3" checked> SAM3 detector</label>
+      <label><input type="checkbox" id="useGemini" checked> Gemini tagger</label>
+    </div>
+    <div class="video-opts hidden" id="videoOpts">
+      <label>Frame interval <input type="number" id="everyN" value="5" min="1" max="300"></label>
+      <label>Max frames <input type="number" id="maxFrames" value="100" min="5" max="200"></label>
+    </div>
+    <button class="btn btn-primary" id="analyzeBtn" onclick="analyzeFile()" disabled>Analyze</button>
+    <div class="loading" id="loading">
+      <div class="progress-bar"><div class="progress-fill"></div></div>
+      <div class="loading-text"><span id="loadMsg">Analyzing...</span><span id="loadTimer">0s</span></div>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="results">
+    <div class="card">
+      <h2>Results</h2>
+      <div class="tabs" id="vizTabs">
+        <button class="tab active" onclick="showViz('annotated')">Annotated</button>
+        <button class="tab" onclick="showViz('detections')">Detections</button>
+        <button class="tab" onclick="showViz('masks')">Masks</button>
+        <button class="tab" onclick="showViz('depth')">Depth</button>
+        <button class="tab" onclick="showViz('pointcloud')">3D Point Cloud</button>
+        <button class="tab" onclick="showViz('floorplan')">Floorplan</button>
+        <button class="tab" onclick="showViz('graph')">Scene Graph</button>
+      </div>
+      <div class="results-grid">
+        <div class="viz-content" id="vizContent"><p class="viz-msg">Upload a file to see results</p></div>
+        <div>
+          <div class="obj-table-wrap" id="objTableWrap"></div>
+          <div class="calib-info" id="calibInfo"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat -->
+    <div class="card" id="chatSection">
+      <h2>Ask About This Scene</h2>
+      <div class="pills" id="pills"></div>
+      <div class="messages" id="messages"></div>
+      <div class="chat-input">
+        <input type="text" id="chatInput" placeholder="Ask a spatial question..." onkeydown="if(event.key==='Enter')askSubmit()">
+        <button onclick="askSubmit()">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let sceneId = null, mode = 'image', selectedFile = null, timerInterval = null;
+
+// Health check
+async function checkHealth() {
+  try {
+    const r = await fetch('/health');
+    const d = await r.json();
+    document.getElementById('healthDot').classList.add('ok');
+    document.getElementById('healthText').textContent = `Connected (${d.scenes_cached} scenes)`;
+  } catch(e) {
+    document.getElementById('healthText').textContent = 'Server offline';
+  }
+}
+checkHealth();
+
+// Mode switch
+function switchMode(m) {
+  mode = m;
+  document.querySelectorAll('#modeTabs .tab').forEach((t,i) => t.classList.toggle('active', i === (m==='image'?0:1)));
+  document.getElementById('videoOpts').classList.toggle('hidden', m === 'image');
+  document.getElementById('useGemini').parentElement.classList.toggle('hidden', m === 'image');
+  document.getElementById('fileInput').accept = m === 'image' ? 'image/*,.heic,.HEIC' : 'video/*,.mov,.MOV,.mp4,.avi,.mkv';
+  selectedFile = null;
+  document.getElementById('fileInfo').textContent = '';
+  document.getElementById('dropZone').classList.remove('has-file');
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+  btn.classList.remove('ready');
+  btn.textContent = 'Analyze';
+}
+
+// File selection
+function handleFile(e) { pickFile(e.target.files[0]); }
+function handleDrop(e) { e.preventDefault(); e.currentTarget.classList.remove('drag-over'); if(e.dataTransfer.files.length) pickFile(e.dataTransfer.files[0]); }
+function pickFile(f) {
+  if (!f) return;
+  selectedFile = f;
+  // Auto-detect mode from file type
+  const ext = f.name.split('.').pop().toLowerCase();
+  const videoExts = ['mov', 'mp4', 'avi', 'mkv'];
+  const isVideo = videoExts.includes(ext) || (f.type && f.type.startsWith('video/'));
+  if (isVideo && mode === 'image') switchMode('video');
+  else if (!isVideo && mode === 'video') switchMode('image');
+  const mb = (f.size / 1048576).toFixed(1);
+  document.getElementById('fileInfo').innerHTML = `&#10003; ${f.name} (${mb} MB) — Ready to analyze`;
+  document.getElementById('dropZone').classList.add('has-file');
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = false;
+  btn.classList.add('ready');
+  btn.textContent = `Analyze ${mode === 'video' ? 'Video' : 'Image'}`;
+}
+
+// Analyze
+async function analyzeFile() {
+  if (!selectedFile) return;
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+  btn.classList.remove('ready');
+  btn.textContent = 'Analyzing...';
+  showError('');
+  const loading = document.getElementById('loading');
+  loading.classList.add('show');
+  let elapsed = 0;
+  document.getElementById('loadTimer').textContent = '0s';
+  document.getElementById('loadMsg').textContent = mode === 'video' ? 'Analyzing video (this takes a few minutes)...' : 'Analyzing image...';
+  timerInterval = setInterval(() => { elapsed++; document.getElementById('loadTimer').textContent = elapsed < 60 ? elapsed+'s' : Math.floor(elapsed/60)+'m '+elapsed%60+'s'; }, 1000);
+
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+
+  let url = '/analyze';
+  fd.append('use_sam3', document.getElementById('useSam3').checked);
+  if (mode === 'video') {
+    url = '/analyze_video';
+    fd.append('use_gemini_tagger', document.getElementById('useGemini').checked);
+    fd.append('every_n_frames', document.getElementById('everyN').value);
+    fd.append('max_frames', document.getElementById('maxFrames').value);
+  }
+
+  try {
+    const r = await fetch(url, { method: 'POST', body: fd });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || `HTTP ${r.status}`); }
+    const data = await r.json();
+    sceneId = data.scene_id;
+    showResults(data);
+    checkHealth();
+  } catch(e) {
+    showError(e.message);
+  } finally {
+    clearInterval(timerInterval);
+    loading.classList.remove('show');
+    btn.disabled = false;
+    btn.classList.add('ready');
+    btn.textContent = `Analyze ${mode === 'video' ? 'Video' : 'Image'}`;
+  }
+}
+
+function showError(msg) {
+  const b = document.getElementById('errorBanner');
+  if (msg) { b.textContent = msg; b.style.display = 'block'; } else { b.style.display = 'none'; }
+}
+
+// Results
+function showResults(data) {
+  document.getElementById('results').style.display = 'block';
+  document.getElementById('chatSection').style.display = 'block';
+  const sg = data.scene_graph;
+
+  // Object table
+  const objs = sg.objects || [];
+  let html = '<table class="obj-table"><thead><tr><th>ID</th><th>Label</th><th>Conf</th><th>Position (m)</th><th>Dims (m)</th><th>Dist</th></tr></thead><tbody>';
+  objs.forEach(o => {
+    const pos = o.position_m;
+    const dim = o.dimensions_m;
+    const c = o.confidence;
+    const color = c > 0.7 ? 'var(--green)' : c > 0.5 ? 'var(--orange)' : 'var(--red)';
+    html += `<tr><td>${o.id}</td><td>${o.label}</td><td><span class="conf-bar" style="width:${c*40}px;background:${color}"></span> ${c.toFixed(2)}</td>`;
+    html += `<td>${pos[0].toFixed(2)}, ${pos[1].toFixed(2)}, ${pos[2].toFixed(2)}</td>`;
+    html += `<td>${dim[0].toFixed(2)} x ${dim[1].toFixed(2)} x ${dim[2].toFixed(2)}</td>`;
+    html += `<td>${o.distance_m.toFixed(2)}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('objTableWrap').innerHTML = html;
+
+  // Calibration
+  const cal = sg.calibration;
+  let ci = `<b>Calibration</b><br>`;
+  ci += `Scale: <span>${cal.scale_factor.toFixed(3)}</span>`;
+  if (cal.reference_object) ci += ` (ref: <span>${cal.reference_object}</span>)`;
+  ci += `<br>Source: <span>${cal.intrinsics_source}</span>`;
+  ci += `<br>Frame: <span>${cal.coordinate_frame || 'camera'}</span>`;
+  if (cal.num_frames) ci += `<br>Keyframes: <span>${cal.num_frames}</span>`;
+  if (cal.scale_warning) ci += `<br><span style="color:var(--orange)">${cal.scale_warning}</span>`;
+  document.getElementById('calibInfo').innerHTML = ci;
+
+  // Suggested questions
+  const labels = [...new Set(objs.map(o => o.label))];
+  const suggestions = ['What objects are in the scene?', 'What is the height of the ceiling?'];
+  if (labels.length > 1) suggestions.push(`How far is the ${labels[0]} from the ${labels[1]}?`);
+  if (labels.includes('refrigerator')) suggestions.push('What is the height of the refrigerator?');
+  const pillsHtml = suggestions.map(q => `<button class="pill" onclick="askQuestion('${q.replace(/'/g,"\\&#39;")}')">${q}</button>`).join('');
+  document.getElementById('pills').innerHTML = pillsHtml;
+
+  // Clear chat
+  document.getElementById('messages').innerHTML = '';
+
+  // Default viz
+  showViz('annotated');
+  document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+}
+
+// Visualization
+function showViz(type) {
+  document.querySelectorAll('#vizTabs .tab').forEach(t => t.classList.toggle('active', t.textContent.toLowerCase().includes(type.substring(0,4))));
+  const vc = document.getElementById('vizContent');
+  const imgTypes = ['annotated','detections','masks','depth'];
+  const iframeTypes = ['pointcloud','floorplan'];
+
+  if (imgTypes.includes(type)) {
+    vc.innerHTML = `<img src="/scene/${sceneId}/${type}?t=${Date.now()}" onerror="this.outerHTML='<p class=viz-msg>Not available</p>'">`;
+  } else if (iframeTypes.includes(type)) {
+    vc.innerHTML = `<iframe src="/scene/${sceneId}/${type}?t=${Date.now()}" onerror="this.outerHTML='<p class=viz-msg>Not available</p>'"></iframe>`;
+  } else if (type === 'graph') {
+    vc.innerHTML = '<pre>Loading...</pre>';
+    fetch(`/scene/${sceneId}/graph/text`).then(r => r.text()).then(t => { vc.innerHTML = `<pre>${t.replace(/</g,'&lt;')}</pre>`; }).catch(() => { vc.innerHTML = '<p class="viz-msg">Failed to load</p>'; });
+  }
+}
+
+// Chat
+function askSubmit() {
+  const input = document.getElementById('chatInput');
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = '';
+  askQuestion(q);
+}
+
+async function askQuestion(question) {
+  const msgs = document.getElementById('messages');
+  msgs.innerHTML += `<div class="msg user"><div class="bubble">${esc(question)}</div></div>`;
+  msgs.innerHTML += `<div class="msg assistant typing" id="typing"><div class="bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>`;
+  msgs.scrollTop = msgs.scrollHeight;
+
+  try {
+    const r = await fetch('/ask', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({scene_id: sceneId, question}) });
+    const d = await r.json();
+    document.getElementById('typing')?.remove();
+    msgs.innerHTML += `<div class="msg assistant"><div class="bubble">${esc(d.answer)}</div></div>`;
+  } catch(e) {
+    document.getElementById('typing')?.remove();
+    msgs.innerHTML += `<div class="msg assistant"><div class="bubble" style="color:var(--red)">Error: ${esc(e.message)}</div></div>`;
+  }
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+</script>
+</body>
+</html>
