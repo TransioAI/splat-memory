@@ -55,3 +55,26 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# Video/image files
+*.MOV
+*.mov
+*.mp4
+*.avi
+*.mkv
+*.heic
+*.HEIC
+
+# Output directories
+*_output/
+video_debug_output/
+debug_output/
+som_output/
+api_run/
+
+# Test scripts (keep in repo manually if needed)
+test_*.py
+visualize_debug.py
+
+# Misc
+=1.0.0
