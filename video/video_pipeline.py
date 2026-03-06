@@ -226,6 +226,11 @@ class VideoPipeline:
         logger.info("Step 5: Merging objects across %d frames...", len(all_frame_detections))
         merged_objects = merge_objects_across_views(all_frame_detections)
 
+        # === Step 5b: Structural surface consolidation ===
+        logger.info("Step 5b: Consolidating structural surfaces (wall/floor/ceiling)...")
+        from video.structural_merge import merge_structural_surfaces
+        merged_objects = merge_structural_surfaces(merged_objects)
+
         # Convert to Object3D for compatibility with calibration/relations
         objects_3d = [
             Object3D(
