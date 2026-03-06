@@ -42,6 +42,7 @@ class VideoPipelineResult:
     scene_graph: SceneGraph
     keyframe_images: list[Image.Image]
     scale_factor: float
+    all_frame_detections: list[list[FrameDetection]] | None = None
 
 
 class VideoPipeline:
@@ -337,6 +338,7 @@ class VideoPipeline:
             mast3r_result=mast3r_result,
             scene_graph=scene_graph_obj,
             keyframe_images=keyframe_images,
+            all_frame_detections=all_frame_detections,
             scale_factor=scale_factor,
         )
 

@@ -80,6 +80,8 @@ class DebugArtifacts:
     masks_jpg: bytes | None = None
     depth_jpg: bytes | None = None
     annotated_jpg: bytes | None = None
+    # Per-frame mask overlays (video mode)
+    frame_masks_jpg: list[bytes] | None = None
     # Interactive HTML
     pointcloud_html: str | None = None
     floorplan_html: str | None = None
@@ -593,6 +595,72 @@ def analyze_video_full(
         scene_graph_text=scene_graph.to_prompt_text(),
     )
 
+    # Render per-frame mask overlays
+    try:
+        import io
+        from PIL import ImageDraw, ImageFont
+        frame_masks = []
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+        except Exception:
+            font = ImageFont.load_default()
+
+        colors = [
+            (255,80,80), (80,255,80), (80,80,255), (255,255,80),
+            (255,80,255), (80,255,255), (128,0,0), (0,128,0),
+            (0,0,128), (128,128,0), (128,0,128), (0,128,128),
+            (255,128,0), (128,255,0), (0,128,255), (255,0,128),
+        ]
+
+        for frame_idx, image in enumerate(result.keyframe_images):
+            img = image.convert("RGB")
+            img_array = np.array(img)
+
+            # Get detections for this frame from pipeline
+            if hasattr(result, '_all_frame_detections') and frame_idx < len(result.all_frame_detections):
+                frame_dets = result.all_frame_detections[frame_idx]
+            else:
+                frame_dets = []
+
+            for j, det in enumerate(frame_dets):
+                color = colors[j % len(colors)]
+                if det.mask is not None:
+                    mask_arr = np.array(det.mask) if not isinstance(det.mask, np.ndarray) else det.mask
+                    if mask_arr.ndim == 2 and mask_arr.shape[0] == img_array.shape[0]:
+                        mask_bool = mask_arr > 0.5
+                        for c in range(3):
+                            img_array[:,:,c] = np.where(mask_bool,
+                                (img_array[:,:,c] * 0.5 + color[c] * 0.5).astype(np.uint8),
+                                img_array[:,:,c])
+
+            overlay = Image.fromarray(img_array)
+            draw = ImageDraw.Draw(overlay)
+            for j, det in enumerate(frame_dets):
+                color = colors[j % len(colors)]
+                x1, y1, x2, y2 = det.bbox
+                draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+                label = f"{det.label} {det.confidence:.2f}"
+                bbox = draw.textbbox((0, 0), label, font=font)
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                draw.rectangle([x1, y1 - th - 4, x1 + tw + 6, y1], fill=(0, 0, 0))
+                draw.text((x1 + 3, y1 - th - 2), label, fill=(255, 255, 255), font=font)
+
+            # Header
+            header = f"Frame {frame_idx}: {len(frame_dets)} detections"
+            hbbox = draw.textbbox((0, 0), header, font=font)
+            hw, hh = hbbox[2] - hbbox[0], hbbox[3] - hbbox[1]
+            draw.rectangle([0, 0, hw + 12, hh + 8], fill=(0, 0, 0))
+            draw.text((6, 4), header, fill=(255, 255, 255), font=font)
+
+            buf = io.BytesIO()
+            overlay.save(buf, format="JPEG", quality=85)
+            frame_masks.append(buf.getvalue())
+
+        debug.frame_masks_jpg = frame_masks
+        logger.info("Rendered %d per-frame mask overlays.", len(frame_masks))
+    except Exception:
+        logger.warning("Failed to render per-frame masks.", exc_info=True)
+
     # Render multi-view point cloud with camera trajectory
     try:
         from visualization.pointcloud import render_multiview_pointcloud_3d
@@ -941,6 +1009,23 @@ async def scene_graph_text(scene_id: str):
             detail=f"'graph/text' not available for scene '{scene_id}'.",
         )
     return PlainTextResponse(content=debug.scene_graph_text)
+
+
+@app.get("/scene/{scene_id}/masks/count")
+async def masks_count(scene_id: str):
+    """Return number of per-frame mask images available."""
+    debug = _get_debug(scene_id)
+    count = len(debug.frame_masks_jpg) if debug.frame_masks_jpg else 0
+    return {"count": count}
+
+
+@app.get("/scene/{scene_id}/masks/{frame_idx}")
+async def mask_frame(scene_id: str, frame_idx: int):
+    """Return per-frame mask overlay image."""
+    debug = _get_debug(scene_id)
+    if not debug.frame_masks_jpg or frame_idx >= len(debug.frame_masks_jpg):
+        raise HTTPException(status_code=404, detail=f"Frame {frame_idx} not available.")
+    return Response(content=debug.frame_masks_jpg[frame_idx], media_type="image/jpeg")
 
 
 @app.get("/health")
