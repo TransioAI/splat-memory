@@ -79,7 +79,7 @@ class VideoPipeline:
     def sam3(self):
         if not hasattr(self, "_sam3") or self._sam3 is None:
             from perception.sam3_detector import Sam3Detector
-            self._sam3 = Sam3Detector(device=self._device)
+            self._sam3 = Sam3Detector(device=self._device, confidence_threshold=0.5)
         return self._sam3
 
     def run(

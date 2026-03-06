@@ -377,7 +377,7 @@ def analyze_image_full(
                     tags.append(obj)
         logger.info("SAM3 mode: %d tags from Gemini", len(tags))
 
-        sam3 = Sam3Detector(device="cuda")
+        sam3 = Sam3Detector(device="cuda", confidence_threshold=0.5)
         detections, masks = sam3.detect_and_segment(image, tags)
         depth_map = pipeline.depth_estimator.estimate(image)
 

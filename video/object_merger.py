@@ -1,4 +1,4 @@
-"""Cross-view object merging using spatial proximity, features, and labels."""
+"""Cross-view object merging using 3D bounding-box IoU, spatial proximity, and labels."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ from video.models import FrameDetection, MergedObject
 logger = logging.getLogger(__name__)
 
 # Merge thresholds
-SPATIAL_PROXIMITY_M = 0.5  # max centroid distance for merge candidate
-FEATURE_COSINE_THRESHOLD = 0.7  # min cosine similarity for merge
+BBOX3D_IOU_THRESHOLD = 0.05  # min 3D bbox IoU for merge (low because partial views)
+SPATIAL_PROXIMITY_M = 1.5  # fallback: max centroid distance when IoU is 0 but objects are close
+FEATURE_COSINE_THRESHOLD = 0.5  # relaxed: appearance changes across views
 MAX_POINTS_PER_OBJECT = 50_000  # cap accumulated points to limit memory
 
 
@@ -25,63 +26,86 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (norm_a * norm_b))
 
 
+def bbox3d_from_points(pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Compute axis-aligned 3D bounding box from points.
+
+    Returns (min_corner, max_corner), each shape (3,).
+    """
+    if len(pts) == 0:
+        return np.zeros(3), np.zeros(3)
+    return pts.min(axis=0), pts.max(axis=0)
+
+
+def bbox3d_iou(pts_a: np.ndarray, pts_b: np.ndarray) -> float:
+    """Compute IoU of axis-aligned 3D bounding boxes from two point sets.
+
+    Uses P5/P95 percentiles instead of min/max to be robust to outliers.
+    """
+    if len(pts_a) < 3 or len(pts_b) < 3:
+        return 0.0
+
+    # Use percentiles for robustness
+    min_a = np.percentile(pts_a, 5, axis=0)
+    max_a = np.percentile(pts_a, 95, axis=0)
+    min_b = np.percentile(pts_b, 5, axis=0)
+    max_b = np.percentile(pts_b, 95, axis=0)
+
+    # Intersection
+    inter_min = np.maximum(min_a, min_b)
+    inter_max = np.minimum(max_a, max_b)
+    inter_dims = np.maximum(0.0, inter_max - inter_min)
+    inter_vol = float(np.prod(inter_dims))
+
+    # Volumes
+    vol_a = float(np.prod(np.maximum(0.0, max_a - min_a)))
+    vol_b = float(np.prod(np.maximum(0.0, max_b - min_b)))
+
+    union = vol_a + vol_b - inter_vol
+    if union < 1e-12:
+        return 0.0
+    return inter_vol / union
+
+
 def extract_mask_descriptor(
     mask: np.ndarray,
     descriptor_map: np.ndarray,
 ) -> np.ndarray:
-    """Average MASt3R descriptors over masked pixels.
-
-    Parameters
-    ----------
-    mask:
-        (H, W) boolean mask.
-    descriptor_map:
-        (H, W, D) per-pixel descriptor array from MASt3R.
-
-    Returns
-    -------
-    np.ndarray
-        (D,) averaged descriptor vector.
-    """
+    """Average MASt3R descriptors over masked pixels."""
     vs, us = np.where(mask)
     if len(vs) == 0:
         return np.zeros(descriptor_map.shape[-1], dtype=np.float32)
-
-    descs = descriptor_map[vs, us]  # (N, D)
+    descs = descriptor_map[vs, us]
     return descs.mean(axis=0).astype(np.float32)
 
 
 def merge_objects_across_views(
     frame_detections: list[list[FrameDetection]],
+    iou_threshold: float = BBOX3D_IOU_THRESHOLD,
     spatial_threshold: float = SPATIAL_PROXIMITY_M,
     feature_threshold: float = FEATURE_COSINE_THRESHOLD,
     require_label_match: bool = True,
 ) -> list[MergedObject]:
     """Merge detections across frames into globally unique objects.
 
-    For each detection, find the best matching existing merged object using
-    three criteria (ALL must pass):
-    1. Labels match (case-insensitive)
-    2. Centroid distance < spatial_threshold
-    3. Cosine similarity of descriptors > feature_threshold
+    Uses a two-tier matching strategy:
+    - Primary: 3D bounding-box IoU (view-independent, robust to partial segmentation)
+    - Fallback: centroid proximity for small or thin objects where IoU is unreliable
 
-    If a descriptor is all zeros (fallback mode), skip criterion 3.
+    Feature cosine similarity is checked but with a relaxed threshold (0.5)
+    since appearance changes significantly across viewpoints.
 
     Parameters
     ----------
     frame_detections:
-        List of per-frame detection lists. Outer index is frame order.
+        List of per-frame detection lists.
+    iou_threshold:
+        Minimum 3D bbox IoU for merge.
     spatial_threshold:
-        Maximum centroid distance (meters) for merge candidacy.
+        Fallback max centroid distance when IoU is zero.
     feature_threshold:
-        Minimum cosine similarity of averaged descriptors.
+        Minimum cosine similarity (relaxed for cross-view).
     require_label_match:
         Whether labels must match exactly.
-
-    Returns
-    -------
-    list[MergedObject]
-        Globally unique objects with merged point clouds.
     """
     merged: list[MergedObject] = []
     next_id = 0
@@ -97,21 +121,25 @@ def merge_objects_across_views(
                 if require_label_match and det.label.lower() != obj.label.lower():
                     continue
 
-                # Criterion 2: Spatial proximity
-                dist = float(np.linalg.norm(det.centroid_world - obj.centroid_world))
-                if dist > spatial_threshold:
+                # Criterion 2: 3D bounding-box IoU
+                iou = bbox3d_iou(det.points_3d_world, obj.points_3d_world)
+
+                # Fallback: centroid distance for small/thin objects
+                centroid_dist = float(np.linalg.norm(det.centroid_world - obj.centroid_world))
+
+                if iou < iou_threshold and centroid_dist > spatial_threshold:
                     continue
 
-                # Criterion 3: Feature similarity (skip if no descriptors)
+                # Criterion 3: Feature similarity (relaxed)
                 if has_descriptors and np.linalg.norm(obj.descriptor) > 1e-8:
                     feat_sim = cosine_similarity(det.descriptor, obj.descriptor)
                     if feat_sim < feature_threshold:
                         continue
                 else:
-                    feat_sim = 1.0  # skip feature check in fallback mode
+                    feat_sim = 1.0
 
-                # Combined score: higher similarity + closer distance
-                score = feat_sim / (1.0 + dist)
+                # Score: IoU dominates, centroid proximity as tiebreaker
+                score = iou * 10.0 + feat_sim / (1.0 + centroid_dist)
                 if score > best_score:
                     best_match = obj
                     best_score = score

@@ -44,7 +44,7 @@ class Sam3Detector:
     def __init__(
         self,
         device: str = "cuda",
-        confidence_threshold: float = 0.3,
+        confidence_threshold: float = 0.5,
         mask_threshold: float = 0.5,
     ) -> None:
         self.device = device if torch.cuda.is_available() else "cpu"

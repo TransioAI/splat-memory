@@ -77,7 +77,7 @@ class PerceptionPipeline:
     def __init__(
         self,
         device: str = "cuda",
-        confidence_threshold: float = 0.3,
+        confidence_threshold: float = 0.5,
         use_tagger: bool = True,
     ) -> None:
         self.detector = ObjectDetector(device=device, confidence_threshold=confidence_threshold)

@@ -44,7 +44,7 @@ class ObjectDetector:
     GROUNDING_DINO_MODEL = "IDEA-Research/grounding-dino-base"
     FLORENCE2_MODEL = "microsoft/Florence-2-large"
 
-    def __init__(self, device: str = "cuda", confidence_threshold: float = 0.3) -> None:
+    def __init__(self, device: str = "cuda", confidence_threshold: float = 0.5) -> None:
         self.device = device if torch.cuda.is_available() else "cpu"
         self.confidence_threshold = confidence_threshold
         self._model = None
