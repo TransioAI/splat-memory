@@ -224,7 +224,7 @@ async function loadScene(id) {
     const gr = await fetch("/scene/" + sceneId + "/graph");
     if (gr.ok) {
       const sg = await gr.json();
-      showResults({scene_id: sceneId, scene_graph: sg});
+      try { showResults({scene_id: sceneId, scene_graph: sg}); } catch(e3) { console.log("Restore showResults error:", e3); }
       showError(null);
       return;
     }
@@ -280,7 +280,7 @@ function pickFile(f) {
 
 // Analyze
 async function analyzeFile() {
-  if (!selectedFile) return;
+  if (!selectedFile) { alert('Please select a file first'); return; }
   const btn = document.getElementById('analyzeBtn');
   btn.disabled = true;
   btn.classList.remove('ready');
