@@ -67,6 +67,7 @@ if _STATIC_DIR.is_dir():
 class DebugArtifacts:
     """In-memory cache of debug visualizations for a scene."""
 
+    source_name: str | None = None
     raw_tags: list[str] | None = None
     filtered_tags: list[str] | None = None
     anchors_injected: list[str] | None = None
@@ -474,6 +475,7 @@ def analyze_image_full(
 
     # 9. Generate debug artifacts
     debug = DebugArtifacts(
+        source_name="image",
         raw_tags=result.raw_tags,
         filtered_tags=result.filtered_tags,
         anchors_injected=result.anchors_injected,
@@ -586,6 +588,7 @@ def analyze_video_full(
 
     # Generate debug artifacts
     debug = DebugArtifacts(
+        source_name=Path(source).name if source else "video",
         scene_graph_json=scene_graph.model_dump(),
         scene_graph_text=scene_graph.to_prompt_text(),
     )
@@ -954,7 +957,7 @@ async def list_scenes():
         scenes.append({
             "id": sid,
             "num_objects": len(sg.objects) if sg else 0,
-            "source": getattr(dbg, "source", None) if dbg else None,
+            "source": dbg.source_name if dbg else None,
         })
     return {"scenes": scenes}
 

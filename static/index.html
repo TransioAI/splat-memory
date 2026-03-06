@@ -117,6 +117,12 @@ header h1 span { color: var(--accent); }
 
   <div class="error-banner" id="errorBanner"></div>
 
+  <!-- Scene selector -->
+  <div id="sceneSelector" style="display:none; padding: 8px 20px; background: var(--bg2); border-radius: 8px; margin: 0 20px 12px;">
+    <label style="color:var(--text2); font-size:13px; margin-right:8px;">Scene:</label>
+    <select id="sceneSelect" onchange="switchScene(this.value)" style="background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:4px 8px; font-family:var(--font); font-size:13px;"></select>
+  </div>
+
   <!-- Upload -->
   <div class="card">
     <h2>Analyze</h2>
@@ -151,15 +157,7 @@ header h1 span { color: var(--accent); }
   <div id="results">
     <div class="card">
       <h2>Results</h2>
-      <div class="tabs" id="vizTabs">
-        <button class="tab active" onclick="showViz('annotated')">Annotated</button>
-        <button class="tab" onclick="showViz('detections')">Detections</button>
-        <button class="tab" onclick="showViz('masks')">Masks</button>
-        <button class="tab" onclick="showViz('depth')">Depth</button>
-        <button class="tab" onclick="showViz('pointcloud')">3D Point Cloud</button>
-        <button class="tab" onclick="showViz('floorplan')">Floorplan</button>
-        <button class="tab" onclick="showViz('graph')">Scene Graph</button>
-      </div>
+      <div class="tabs" id="vizTabs"></div>
       <div class="results-grid">
         <div class="viz-content" id="vizContent"><p class="viz-msg">Upload a file to see results</p></div>
         <div>
@@ -203,24 +201,42 @@ async function restoreLastScene() {
     const r = await fetch('/scenes');
     const d = await r.json();
     if (d.scenes && d.scenes.length > 0) {
+      populateSceneSelector(d.scenes);
       const last = d.scenes[d.scenes.length - 1];
-      sceneId = last.id;
-      try {
-        const gr = await fetch("/scene/" + sceneId + "/graph");
-        if (gr.ok) {
-          const sg = await gr.json();
-          showResults({scene_id: sceneId, scene_graph: sg});
-          showError(null);
-          return;
-        }
-      } catch(e2) { console.log("Graph fetch failed, falling back:", e2); }
-      // Fallback: just show viz tabs and chat without object table
-      document.getElementById('results').style.display = 'block';
-      document.getElementById('chatSection').style.display = 'block';
-      showViz('annotated');
-      showError(null);
+      await loadScene(last.id);
     }
   } catch(e) { console.log("Could not restore scene:", e); }
+}
+
+function populateSceneSelector(scenes) {
+  const sel = document.getElementById('sceneSelect');
+  const wrap = document.getElementById('sceneSelector');
+  sel.innerHTML = scenes.map(s =>
+    `<option value="${s.id}">${s.source || 'scene'} (${s.num_objects} objects)</option>`
+  ).join('');
+  sel.value = scenes[scenes.length - 1].id;
+  wrap.style.display = scenes.length > 1 ? 'block' : 'none';
+}
+
+async function loadScene(id) {
+  sceneId = id;
+  try {
+    const gr = await fetch("/scene/" + sceneId + "/graph");
+    if (gr.ok) {
+      const sg = await gr.json();
+      showResults({scene_id: sceneId, scene_graph: sg});
+      showError(null);
+      return;
+    }
+  } catch(e2) { console.log("Graph fetch failed:", e2); }
+  document.getElementById('results').style.display = 'block';
+  document.getElementById('chatSection').style.display = 'block';
+  showError(null);
+}
+
+async function switchScene(id) {
+  document.getElementById('messages').innerHTML = '';
+  await loadScene(id);
 }
 
 checkHealth();
@@ -296,6 +312,8 @@ async function analyzeFile() {
     sceneId = data.scene_id;
     showResults(data);
     checkHealth();
+    // Refresh scene selector
+    fetch('/scenes').then(r=>r.json()).then(d=>{ if(d.scenes) populateSceneSelector(d.scenes); document.getElementById('sceneSelect').value = sceneId; });
   } catch(e) {
     showError(e.message);
   } finally {
@@ -313,10 +331,36 @@ function showError(msg) {
 }
 
 // Results
+function buildVizTabs(isVideo) {
+  const tabs = document.getElementById('vizTabs');
+  const imageTabs = [
+    {id:'annotated', label:'Annotated'},
+    {id:'detections', label:'Detections'},
+    {id:'masks', label:'Masks'},
+    {id:'depth', label:'Depth'},
+    {id:'floorplan', label:'Floorplan'},
+    {id:'graph', label:'Scene Graph'},
+  ];
+  const videoTabs = [
+    {id:'annotated', label:'Annotated'},
+    {id:'detections', label:'Detections'},
+    {id:'masks', label:'Masks'},
+    {id:'pointcloud', label:'3D Point Cloud'},
+    {id:'floorplan', label:'Floorplan'},
+    {id:'graph', label:'Scene Graph'},
+  ];
+  const list = isVideo ? videoTabs : imageTabs;
+  tabs.innerHTML = list.map((t,i) =>
+    `<button class="tab${i===0?' active':''}" onclick="showViz('${t.id}')">${t.label}</button>`
+  ).join('');
+}
+
 function showResults(data) {
   document.getElementById('results').style.display = 'block';
   document.getElementById('chatSection').style.display = 'block';
   const sg = data.scene_graph;
+  const isVideo = sg.calibration && sg.calibration.coordinate_frame === 'world';
+  buildVizTabs(isVideo);
 
   // Object table
   const objs = sg.objects || [];
