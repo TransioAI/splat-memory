@@ -259,6 +259,7 @@ async function switchScene(id) {
 }
 
 checkHealth();
+toggleKfOptions();
 
 // Mode switch
 function switchMode(m) {
@@ -298,15 +299,8 @@ function pickFile(f) {
 }
 
 function toggleKfOptions() {
-  const strategy = document.getElementById('kfStrategy').value;
-  const everyN = document.getElementById('everyN').parentElement;
-  if (strategy === 'smart') {
-    everyN.style.opacity = '0.5';
-    everyN.title = 'Smart mode uses DINOv2 diversity selection — interval is a secondary cap';
-  } else {
-    everyN.style.opacity = '1';
-    everyN.title = '';
-  }
+  const smart = document.getElementById('kfStrategy').value === 'smart';
+  document.getElementById('everyN').parentElement.style.display = smart ? 'none' : '';
 }
 
 // Analyze
