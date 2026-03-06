@@ -156,6 +156,12 @@ header h1 span { color: var(--accent); }
       <label><input type="checkbox" id="useGemini" checked> Gemini tagger</label>
     </div>
     <div class="video-opts hidden" id="videoOpts">
+      <label>Keyframe strategy
+        <select id="kfStrategy" onchange="toggleKfOptions()">
+          <option value="uniform">Uniform</option>
+          <option value="smart" selected>Smart (DINOv2)</option>
+        </select>
+      </label>
       <label>Frame interval <input type="number" id="everyN" value="5" min="1" max="300"></label>
       <label>Max frames <input type="number" id="maxFrames" value="100" min="5" max="200"></label>
     </div>
@@ -291,6 +297,18 @@ function pickFile(f) {
   btn.textContent = `Analyze ${mode === 'video' ? 'Video' : 'Image'}`;
 }
 
+function toggleKfOptions() {
+  const strategy = document.getElementById('kfStrategy').value;
+  const everyN = document.getElementById('everyN').parentElement;
+  if (strategy === 'smart') {
+    everyN.style.opacity = '0.5';
+    everyN.title = 'Smart mode uses DINOv2 diversity selection — interval is a secondary cap';
+  } else {
+    everyN.style.opacity = '1';
+    everyN.title = '';
+  }
+}
+
 // Analyze
 let isAnalyzing = false;
 let analyzeController = null;
@@ -330,6 +348,7 @@ async function analyzeFile() {
     fd.append('use_gemini_tagger', document.getElementById('useGemini').checked);
     fd.append('every_n_frames', document.getElementById('everyN').value);
     fd.append('max_frames', document.getElementById('maxFrames').value);
+    fd.append('keyframe_strategy', document.getElementById('kfStrategy').value);
   }
 
   try {

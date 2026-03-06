@@ -92,6 +92,7 @@ class VideoPipeline:
         max_frames: int = 40,
         scene_graph: str = "swin-3",
         add_loop_closure: bool = True,
+        keyframe_strategy: str = "uniform",
     ) -> VideoPipelineResult:
         """Run the complete video analysis pipeline.
 
@@ -121,13 +122,20 @@ class VideoPipeline:
         source = Path(source)
 
         # === Step 1: Extract keyframes ===
-        logger.info("Step 1: Extracting keyframes from %s", source)
+        logger.info("Step 1: Extracting keyframes from %s (strategy=%s)", source, keyframe_strategy)
         if source.is_dir():
             keyframes = load_keyframes_from_directory(source, max_frames=max_frames)
         elif source.suffix.lower() in (".mp4", ".mov", ".avi", ".mkv"):
-            keyframes = extract_keyframes_from_video(
-                source, every_n_frames=every_n_frames, max_frames=max_frames,
-            )
+            if keyframe_strategy == "smart":
+                from video.smart_keyframes import SmartKeyframeSelector
+                selector = SmartKeyframeSelector(device=self._device)
+                keyframes = selector.select_keyframes(
+                    source, max_frames=max_frames, every_n_frames=every_n_frames,
+                )
+            else:
+                keyframes = extract_keyframes_from_video(
+                    source, every_n_frames=every_n_frames, max_frames=max_frames,
+                )
         else:
             raise ValueError(
                 f"Source must be a video file (.mp4/.mov) or image directory: {source}"

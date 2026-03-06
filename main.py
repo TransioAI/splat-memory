@@ -562,6 +562,7 @@ def analyze_video_full(
     use_sam3: bool = False,
     every_n_frames: int = 30,
     max_frames: int = 40,
+    keyframe_strategy: str = "uniform",
 ) -> tuple[str, SceneGraph]:
     """Run the multi-view video pipeline and build a SceneGraph.
 
@@ -593,6 +594,7 @@ def analyze_video_full(
         use_sam3=use_sam3,
         every_n_frames=every_n_frames,
         max_frames=max_frames,
+        keyframe_strategy=keyframe_strategy,
     )
 
     scene_graph = result.scene_graph
@@ -626,7 +628,7 @@ def analyze_video_full(
             img_array = np.array(img)
 
             # Get detections for this frame from pipeline
-            if hasattr(result, '_all_frame_detections') and frame_idx < len(result.all_frame_detections):
+            if result.all_frame_detections is not None and frame_idx < len(result.all_frame_detections):
                 frame_dets = result.all_frame_detections[frame_idx]
             else:
                 frame_dets = []
@@ -782,6 +784,7 @@ async def analyze_video(
     use_sam3: bool = Form(False),
     every_n_frames: int = Form(30),
     max_frames: int = Form(40),
+    keyframe_strategy: str = Form("uniform"),
 ):
     """Upload a video and get a global 3D scene graph.
 
@@ -824,6 +827,7 @@ async def analyze_video(
                 use_sam3=use_sam3,
                 every_n_frames=every_n_frames,
                 max_frames=max_frames,
+                keyframe_strategy=keyframe_strategy,
             ),
         )
     except Exception as exc:
