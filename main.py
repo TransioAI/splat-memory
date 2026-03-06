@@ -92,6 +92,15 @@ _scene_cache: dict[str, tuple[SceneGraph, SpatialReasoner, DebugArtifacts]] = {}
 
 _CACHE_DIR = Path(__file__).parent / ".scene_cache"
 
+# Analysis cancellation
+import asyncio
+import threading
+_analysis_thread: threading.Thread | None = None
+_analysis_cancel = threading.Event()
+_analysis_result: dict | None = None
+_analysis_error: str | None = None
+_analysis_running = threading.Event()
+
 def _save_scene_to_disk(scene_id: str, scene_graph: SceneGraph, debug: DebugArtifacts) -> None:
     import pickle
     _CACHE_DIR.mkdir(exist_ok=True)
@@ -798,22 +807,34 @@ async def analyze_video(
         tmp.write(contents)
         tmp_path = tmp.name
     try:
+        _analysis_running.set()
+        _analysis_cancel.clear()
 
         detect_objects = None
         if detect:
             detect_objects = [p.strip() for p in detect.split(",") if p.strip()]
 
-        scene_id, scene_graph = analyze_video_full(
-            source=tmp_path,
-            detect=detect_objects,
-            use_gemini_tagger=use_gemini_tagger,
-            use_sam3=use_sam3,
-            every_n_frames=every_n_frames,
-            max_frames=max_frames,
+        loop = asyncio.get_event_loop()
+        scene_id, scene_graph = await loop.run_in_executor(
+            None,
+            lambda: analyze_video_full(
+                source=tmp_path,
+                detect=detect_objects,
+                use_gemini_tagger=use_gemini_tagger,
+                use_sam3=use_sam3,
+                every_n_frames=every_n_frames,
+                max_frames=max_frames,
+            ),
         )
     except Exception as exc:
+        _analysis_running.clear()
+        if _analysis_cancel.is_set():
+            _analysis_cancel.clear()
+            raise HTTPException(status_code=499, detail="Analysis cancelled.")
         logger.exception("Video analysis failed.")
         raise HTTPException(status_code=500, detail=f"Video analysis failed: {exc}") from exc
+    else:
+        _analysis_running.clear()
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -1026,6 +1047,23 @@ async def mask_frame(scene_id: str, frame_idx: int):
     if not debug.frame_masks_jpg or frame_idx >= len(debug.frame_masks_jpg):
         raise HTTPException(status_code=404, detail=f"Frame {frame_idx} not available.")
     return Response(content=debug.frame_masks_jpg[frame_idx], media_type="image/jpeg")
+
+
+@app.post("/cancel")
+async def cancel_analysis():
+    """Cancel a running analysis."""
+    global _analysis_thread, _analysis_result, _analysis_error
+    if _analysis_running.is_set():
+        _analysis_cancel.set()
+        logger.info("Analysis cancellation requested.")
+        return {"status": "cancelled"}
+    return {"status": "not_running"}
+
+
+@app.get("/analysis_status")
+async def analysis_status():
+    """Check if an analysis is currently running."""
+    return {"running": _analysis_running.is_set()}
 
 
 @app.get("/health")

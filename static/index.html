@@ -52,6 +52,8 @@ header h1 span { color: var(--accent); }
 .btn-primary { background: #30363d; color: var(--text2); margin-top: 16px; }
 .btn-primary.ready { background: #238636; color: #fff; font-size: 16px; padding: 12px 32px; animation: pulse 2s infinite; }
 .btn-primary.ready:hover { background: #2ea043; }
+.btn-cancel { background: #da3633; color: #fff; font-size: 16px; padding: 12px 32px; }
+.btn-cancel:hover { background: #f85149; }
 @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(35,134,54,0.4)} 50%{box-shadow:0 0 0 8px rgba(35,134,54,0)} }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 
@@ -290,12 +292,26 @@ function pickFile(f) {
 }
 
 // Analyze
+let isAnalyzing = false;
+let analyzeController = null;
+
 async function analyzeFile() {
+  // If already analyzing, cancel it
+  if (isAnalyzing) {
+    cancelAnalysis();
+    return;
+  }
+
   if (!selectedFile) { alert('Please select a file first'); return; }
   const btn = document.getElementById('analyzeBtn');
-  btn.disabled = true;
+  isAnalyzing = true;
+  analyzeController = new AbortController();
+
+  // Switch to cancel mode
   btn.classList.remove('ready');
-  btn.textContent = 'Analyzing...';
+  btn.classList.add('btn-cancel');
+  btn.textContent = 'Stop Analyzing';
+  btn.disabled = false;
   showError('');
   const loading = document.getElementById('loading');
   loading.classList.add('show');
@@ -317,23 +333,45 @@ async function analyzeFile() {
   }
 
   try {
-    const r = await fetch(url, { method: 'POST', body: fd });
+    const r = await fetch(url, { method: 'POST', body: fd, signal: analyzeController.signal });
     if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || `HTTP ${r.status}`); }
     const data = await r.json();
     sceneId = data.scene_id;
     showResults(data);
     checkHealth();
-    // Refresh scene selector
     fetch('/scenes').then(r=>r.json()).then(d=>{ if(d.scenes) populateSceneSelector(d.scenes); document.getElementById('sceneSelect').value = sceneId; });
   } catch(e) {
-    showError(e.message);
+    if (e.name === 'AbortError') {
+      showError('Analysis cancelled.');
+    } else {
+      showError(e.message);
+    }
   } finally {
-    clearInterval(timerInterval);
-    loading.classList.remove('show');
-    btn.disabled = false;
-    btn.classList.add('ready');
-    btn.textContent = `Analyze ${mode === 'video' ? 'Video' : 'Image'}`;
+    resetAnalyzeButton();
   }
+}
+
+async function cancelAnalysis() {
+  try {
+    // Tell the server to cancel
+    await fetch('/cancel', { method: 'POST' });
+  } catch(e) { /* ignore */ }
+  // Abort the client-side fetch
+  if (analyzeController) analyzeController.abort();
+  document.getElementById('loadMsg').textContent = 'Cancelling...';
+}
+
+function resetAnalyzeButton() {
+  isAnalyzing = false;
+  analyzeController = null;
+  clearInterval(timerInterval);
+  const loading = document.getElementById('loading');
+  loading.classList.remove('show');
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = false;
+  btn.classList.remove('btn-cancel');
+  btn.classList.add('ready');
+  btn.textContent = `Analyze ${mode === 'video' ? 'Video' : 'Image'}`;
 }
 
 function showError(msg) {
